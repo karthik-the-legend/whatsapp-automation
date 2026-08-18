@@ -1,0 +1,305 @@
+// apps/api/prisma/schema.prisma
+//
+// Extended from the Orange Belt schema to cover the full automation spec:
+// attendance, parent-enquiry chatbot (FAQs + conversations), broadcast
+// messaging, document sharing, and human handover.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// CORE: Students, Batches, Payments
+// ---------------------------------------------------------------------------
+
+model Student {
+  id                String        @id @default(cuid())
+  name              String
+  parentName        String?
+  phone             String        @unique // WhatsApp number, E.164 - this IS the identity
+  altPhone          String?       // secondary contact / emergency contact
+  dateOfBirth       DateTime?
+  gender            Gender?
+  beltLevel         String?       // e.g. "White", "Yellow", "Black - Dan 1"
+  joiningDate       DateTime      @default(now())
+  status            StudentStatus @default(ACTIVE)
+  medicalNotes      String?
+
+  batch             Batch?        @relation(fields: [batchId], references: [id])
+  batchId           String?
+
+  payments          Payment[]
+  attendance        Attendance[]
+  conversations     Conversation[]
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([batchId])
+  @@index([status])
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum StudentStatus {
+  ACTIVE
+  INACTIVE
+  TRIAL
+}
+
+model Batch {
+  id                  String    @id @default(cuid())
+  name                String    // e.g. "Kids Kickboxing - Evening"
+  daysOfWeek          Int[]     // 0=Sunday..6=Saturday; e.g. weekend batch = [0,6]
+  classStartTime      String    // "17:00" - 24hr local time
+  reminderOffsetMins  Int       @default(60) // send class reminder N minutes before start
+  feeAmount           Int       // smallest currency unit (paise/cents)
+  feeCycle            FeeCycle  @default(MONTHLY)
+  minAge              Int?
+  maxAge              Int?
+
+  students            Student[]
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+enum FeeCycle {
+  MONTHLY
+  QUARTERLY
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  student           Student       @relation(fields: [studentId], references: [id])
+  studentId         String
+
+  receiptNumber     String?       @unique
+  amount            Int
+  amountPaid        Int?          // supports partial payments; remainingBalance derived
+  paymentMode       PaymentMode?
+  status            PaymentStatus @default(PENDING)
+
+  dueDate           DateTime
+  paidAt            DateTime?
+
+  gatewayOrderId    String?
+  gatewayPaymentId  String?
+  receiptSentAt     DateTime?
+
+  remindersSent     FeeReminderStage[]
+
+  createdAt         DateTime      @default(now())
+
+  @@index([studentId])
+  @@index([status, dueDate])
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  BANK_TRANSFER
+  RAZORPAY
+  STRIPE
+}
+
+enum PaymentStatus {
+  PENDING
+  PARTIAL
+  PAID
+  OVERDUE
+  FAILED
+}
+
+enum FeeReminderStage {
+  DAYS_BEFORE_7
+  DAYS_BEFORE_3
+  DUE_DATE
+  OVERDUE
+}
+
+model TrialBooking {
+  id         String   @id @default(cuid())
+  name       String
+  phone      String
+  batchId    String?
+  slot       DateTime
+  confirmed  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// ATTENDANCE
+// ---------------------------------------------------------------------------
+
+model Attendance {
+  id          String           @id @default(cuid())
+  student     Student          @relation(fields: [studentId], references: [id])
+  studentId   String
+  batchId     String
+  date        DateTime         @db.Date
+  status      AttendanceStatus
+  markedBy    String?          // admin user id, null if self-marked via WhatsApp reply
+  notifiedAt  DateTime?        // when the "we missed you" message was sent (ABSENT only)
+  createdAt   DateTime         @default(now())
+
+  @@unique([studentId, date])
+  @@index([batchId, date])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+}
+
+// ---------------------------------------------------------------------------
+// CHATBOT: FAQs, Conversations, Messages
+// ---------------------------------------------------------------------------
+
+model Faq {
+  id         String   @id @default(cuid())
+  category   FaqCategory
+  question   String
+  answer     String
+  keywords   String[] // used for lightweight keyword-boosted retrieval before LLM fallback
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+enum FaqCategory {
+  FEES
+  TIMINGS
+  AGE_ELIGIBILITY
+  TRIAL_CLASS
+  LOCATION
+  CONTACT
+  BELT_EXAM
+  TOURNAMENT
+  HOLIDAYS
+  ADMISSION
+  DOCUMENTS
+  UNIFORM
+  OTHER
+}
+
+model Conversation {
+  id                String             @id @default(cuid())
+  student           Student?           @relation(fields: [studentId], references: [id])
+  studentId         String?
+  phone             String             // always set, even before a Student record exists
+  status            ConversationStatus @default(BOT)
+  currentIntent     String?
+  lastMessageAt     DateTime           @default(now())
+  escalatedAt       DateTime?
+  escalationReason  String?
+  assignedAdminId   String?
+
+  messages          Message[]
+
+  createdAt         DateTime           @default(now())
+
+  @@index([phone])
+  @@index([status])
+}
+
+enum ConversationStatus {
+  BOT
+  ESCALATED
+  HUMAN_ACTIVE
+  CLOSED
+}
+
+model Message {
+  id              String        @id @default(cuid())
+  conversation    Conversation  @relation(fields: [conversationId], references: [id])
+  conversationId  String
+  direction       MessageDirection
+  body            String
+  intent          String?
+  confidence      Float?
+  waMessageId     String?
+  createdAt       DateTime      @default(now())
+
+  @@index([conversationId])
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+// ---------------------------------------------------------------------------
+// BROADCAST & DOCUMENTS
+// ---------------------------------------------------------------------------
+
+model BroadcastLog {
+  id            String         @id @default(cuid())
+  segment       BroadcastSegment
+  segmentFilter Json?          // e.g. { batchId: "..." } or { beltLevel: "..." }
+  templateName  String
+  body          String
+  sentCount     Int            @default(0)
+  failedCount   Int            @default(0)
+  createdBy     String?        // admin user id
+  createdAt     DateTime       @default(now())
+}
+
+enum BroadcastSegment {
+  SPECIFIC_BATCH
+  BELT_LEVEL
+  AGE_GROUP
+  PENDING_FEES
+  ACTIVE_STUDENTS
+  PARENTS_ONLY
+  ALL_STUDENTS
+}
+
+model DocumentAsset {
+  id         String   @id @default(cuid())
+  name       String   // "Admission Form", "Belt Syllabus - Yellow"
+  type       DocumentType
+  mediaId    String?  // WhatsApp media ID once uploaded to Meta
+  fileUrl    String?  // source file, e.g. in object storage
+  createdAt  DateTime @default(now())
+}
+
+enum DocumentType {
+  ADMISSION_FORM
+  ACADEMY_RULES
+  FEE_STRUCTURE
+  UNIFORM_INFO
+  BELT_SYLLABUS
+  EVENT_BROCHURE
+  TOURNAMENT_FORM
+  TRAINING_SCHEDULE
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN
+// ---------------------------------------------------------------------------
+
+model AdminUser {
+  id         String    @id @default(cuid())
+  clerkId    String    @unique // maps to Clerk auth user
+  name       String
+  email      String    @unique
+  role       AdminRole @default(INSTRUCTOR)
+  createdAt  DateTime  @default(now())
+}
+
+enum AdminRole {
+  OWNER
+  INSTRUCTOR
+  FRONT_DESK
+}

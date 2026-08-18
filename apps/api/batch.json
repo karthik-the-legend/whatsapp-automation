@@ -1,0 +1,6 @@
+{
+  "name": "Evening Kickboxing",
+  "daysOfWeek": [ 1, 3, 5 ],
+  "classStartTime": "17:00",
+  "feeAmount": 2500
+}

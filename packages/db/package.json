@@ -1,0 +1,17 @@
+{
+  "name": "@academy/db",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "generate": "prisma generate --schema=../../apps/api/prisma/schema.prisma",
+    "migrate": "prisma migrate dev --schema=../../apps/api/prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.16.1"
+  },
+  "devDependencies": {
+    "prisma": "^5.16.1",
+    "typescript": "^5.5.2"
+  }
+}
