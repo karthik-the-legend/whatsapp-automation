@@ -38,28 +38,44 @@ async function getOrCreateConversation(phone: string) {
  * already verified the payload came from Meta.
  */
 async function handleInboundMessage(message: InboundTextMessage): Promise<void> {
+  // Meta redelivers webhooks under real-world conditions (slow ack, network
+  // blips) - waMessageId has a @unique constraint on Message specifically
+  // so a redelivered message is never processed (and never replied to)
+  // twice. Checked before any other work, including markAsRead.
+  const alreadyProcessed = await conversationRepository.findMessageByWaMessageId(message.waMessageId);
+  if (alreadyProcessed) {
+    log.info('Duplicate webhook delivery ignored', { waMessageId: message.waMessageId });
+    return;
+  }
+
   await whatsappService.markAsRead(message.waMessageId);
 
   const conversation = await getOrCreateConversation(message.from);
   await conversationRepository.touch(conversation.id);
 
-  // Human handover check runs FIRST, before any bot logic, from any state.
-  if (handoverService.isHandoverRequest(message.text)) {
-    await conversationRepository.addMessage(conversation.id, 'INBOUND', message.text);
+  const alreadyEscalated = conversation.status === 'HUMAN_ACTIVE' || conversation.status === 'ESCALATED';
+
+  // Human handover check runs before any bot logic, from any state - but
+  // if it's already escalated, re-running escalate() would overwrite the
+  // original escalationReason/escalatedAt and re-send the full escalation
+  // message. Fall through to the "already escalated" branch below instead.
+  if (handoverService.isHandoverRequest(message.text) && !alreadyEscalated) {
+    await conversationRepository.addMessage(conversation.id, 'INBOUND', message.text, { waMessageId: message.waMessageId });
     await handoverService.escalate(conversation.id, message.from, 'Explicit handover phrase detected');
     return;
   }
 
-  // If a human admin already has this conversation, the bot stays silent -
-  // messages are still logged (for the admin's chat history view) but no
-  // auto-reply is sent.
-  if (conversation.status === 'HUMAN_ACTIVE' || conversation.status === 'ESCALATED') {
-    await conversationRepository.addMessage(conversation.id, 'INBOUND', message.text);
-    log.info('Message received during human handoff - no bot reply sent', { conversationId: conversation.id });
+  // A human admin already owns this conversation - the bot must never
+  // generate its own answer here, but it must also never go silent. Every
+  // message is logged (for the admin's chat history view) AND gets a
+  // short, honest "still with our team" acknowledgment.
+  if (alreadyEscalated) {
+    await conversationRepository.addMessage(conversation.id, 'INBOUND', message.text, { waMessageId: message.waMessageId });
+    await handoverService.acknowledgeWhileEscalated(conversation.id, message.from);
     return;
   }
 
-  await chatbotService.handleMessage(conversation.id, message.from, message.text);
+  await chatbotService.handleMessage(conversation.id, message.from, message.text, message.waMessageId);
 }
 
 export const whatsappWebhookHandler = { handleInboundMessage, getOrCreateConversation };

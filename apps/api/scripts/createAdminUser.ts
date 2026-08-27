@@ -12,6 +12,7 @@
 // Usage (from apps/api):
 //   npx tsx scripts/createAdminUser.ts <clerkUserId> <name> <email> [OWNER|INSTRUCTOR|FRONT_DESK]
 
+import '../src/config/env';
 import { adminRepository } from '../src/repositories/admin.repository';
 import { prisma, AdminRole } from '@academy/db';
 

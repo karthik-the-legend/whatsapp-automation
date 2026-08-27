@@ -8,12 +8,20 @@
 // AdminUser decides authorization (see adminAuth.service.ts for why those
 // are kept separate).
 //
-// Deliberately NOT wrapped in fastify-plugin's fp() - unlike
-// security.plugin.ts/errorHandler.plugin.ts which must apply globally
-// before any route is registered, this one is registered inside a nested
-// encapsulation context in routes/index.ts so it only ever guards
-// /api/v1/* and never the signature-authenticated webhook routes.
+// MUST be wrapped in fastify-plugin's fp() here, for the opposite reason
+// the original comment on this file used to give. `fastify.register(plugin)`
+// creates a NEW encapsulated child context for that plugin by default - a
+// hook added via `fastify.addHook()` INSIDE that plugin only applies within
+// that plugin's own tiny scope, not to sibling `.register()` calls at the
+// same level. Without fp(), this hook was being attached to a scope with no
+// routes in it at all, so every /api/v1/* route was silently unauthenticated
+// (confirmed via testing - a request with no Authorization header at all
+// was returning 200, not 401). fp() breaks OUT of that new-child-context
+// creation and attaches the hook to the PARENT scope instead - which here
+// is exactly the `adminApi` block in routes/index.ts, so it still only ever
+// guards /api/v1/* and never the signature-authenticated webhook routes.
 
+import fp from 'fastify-plugin';
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { verifyToken } from '@clerk/backend';
 import { AdminRole } from '@academy/db';
@@ -30,7 +38,7 @@ declare module 'fastify' {
   }
 }
 
-export async function clerkAuthPlugin(fastify: FastifyInstance): Promise<void> {
+async function clerkAuthPluginImpl(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('onRequest', async (request: FastifyRequest) => {
     const header = request.headers.authorization;
     if (!header?.startsWith('Bearer ')) {
@@ -54,3 +62,5 @@ export async function clerkAuthPlugin(fastify: FastifyInstance): Promise<void> {
     request.adminUser = adminUser;
   });
 }
+
+export const clerkAuthPlugin = fp(clerkAuthPluginImpl, { name: 'clerk-auth-plugin' });

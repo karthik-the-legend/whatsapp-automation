@@ -31,16 +31,16 @@ const log = logger.child({ module: 'handover-service' });
 /**
  * Escalates a conversation to a human admin. Chat history stays fully
  * intact and visible (see conversationRepository.history) - the bot simply
- * stops auto-replying until an admin closes or hands it back.
+ * stops auto-replying until an admin resolves it (see conversation.service.ts).
  */
 async function escalate(conversationId: string, phone: string, reason: string) {
   await conversationRepository.escalate(conversationId, reason);
 
-  await whatsappService.sendText(
-    phone,
+  const text =
     "I've let our team know you'd like to speak with someone directly. " +
-      "An admin will reply here shortly - thanks for your patience! 🙏",
-  );
+    'An admin will reply here shortly - thanks for your patience! 🙏';
+  await whatsappService.sendText(phone, text);
+  await conversationRepository.addMessage(conversationId, 'OUTBOUND', text);
 
   log.info('Conversation escalated to human', { conversationId, reason });
 
@@ -49,4 +49,18 @@ async function escalate(conversationId: string, phone: string, reason: string) {
   // polled from the admin inbox.
 }
 
-export const handoverService = { isHandoverRequest, escalate };
+/**
+ * A conversation must NEVER go fully silent, including while it's already
+ * escalated - re-sending the full escalation message on every message
+ * would be spammy, but saying nothing at all is worse. This is the short
+ * "still with us" reply for every message received after the first one
+ * while waiting on a human. See whatsapp.webhook.ts for the call site.
+ */
+async function acknowledgeWhileEscalated(conversationId: string, phone: string) {
+  const text = "Got it - our team's already looking into this and will reply here shortly 🙏";
+  await whatsappService.sendText(phone, text);
+  await conversationRepository.addMessage(conversationId, 'OUTBOUND', text);
+  log.info('Sent hold acknowledgment for already-escalated conversation', { conversationId });
+}
+
+export const handoverService = { isHandoverRequest, escalate, acknowledgeWhileEscalated };

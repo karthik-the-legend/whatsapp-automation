@@ -23,9 +23,10 @@ const schema = z.object({
   RAZORPAY_KEY_SECRET: z.string().default(''),
   RAZORPAY_WEBHOOK_SECRET: z.string().default(''),
 
-  AI_PROVIDER: z.enum(['anthropic', 'openai']).default('anthropic'),
+  AI_PROVIDER: z.enum(['anthropic', 'openai', 'gemini']).default('anthropic'),
   ANTHROPIC_API_KEY: z.string().default(''),
   OPENAI_API_KEY: z.string().default(''),
+  GEMINI_API_KEY: z.string().default(''),
 
   CLERK_SECRET_KEY: z.string().default(''),
 

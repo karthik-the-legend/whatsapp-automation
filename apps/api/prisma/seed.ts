@@ -13,6 +13,7 @@
 // academy details before running - this is meant to be customized, not
 // used verbatim in production.
 
+import '../src/config/env';
 import { prisma, FaqCategory } from '@academy/db';
 
 interface SeedFaq {

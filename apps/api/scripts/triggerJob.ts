@@ -21,6 +21,7 @@
 //   npx tsx scripts/triggerJob.ts notify-absentees [YYYY-MM-DD]
 //   npx tsx scripts/triggerJob.ts birthday-wishes [YYYY-MM-DD]
 
+import '../src/config/env';
 import { reminderService } from '../src/services/reminder.service';
 import { attendanceService } from '../src/services/attendance.service';
 import { communicationService } from '../src/services/communication.service';

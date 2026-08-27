@@ -58,6 +58,11 @@ async function history(conversationId: string, limit = 20) {
   });
 }
 
+/** Idempotency check - a Meta webhook retry must never be processed twice. See waMessageId's @unique constraint on Message. */
+async function findMessageByWaMessageId(waMessageId: string) {
+  return prisma.message.findUnique({ where: { waMessageId } });
+}
+
 async function findEscalatedQueue() {
   return prisma.conversation.findMany({
     where: { status: 'ESCALATED' },
@@ -77,4 +82,5 @@ export const conversationRepository = {
   addMessage,
   history,
   findEscalatedQueue,
+  findMessageByWaMessageId,
 };

@@ -21,6 +21,7 @@ import { attendanceRoutes } from './attendance.routes';
 import { broadcastRoutes } from './broadcast.routes';
 import { documentRoutes } from './document.routes';
 import { analyticsRoutes } from './analytics.routes';
+import { conversationRoutes } from './conversation.routes';
 import { clerkAuthPlugin } from '../plugins/clerkAuth.plugin';
 
 export async function registerRoutes(fastify: FastifyInstance): Promise<void> {
@@ -45,5 +46,6 @@ export async function registerRoutes(fastify: FastifyInstance): Promise<void> {
     await adminApi.register(broadcastRoutes, { prefix: '/api/v1/broadcasts' });
     await adminApi.register(documentRoutes, { prefix: '/api/v1/documents' });
     await adminApi.register(analyticsRoutes, { prefix: '/api/v1/analytics' });
+    await adminApi.register(conversationRoutes, { prefix: '/api/v1/conversations' });
   });
 }

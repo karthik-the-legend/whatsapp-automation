@@ -228,7 +228,7 @@ model Message {
   body            String
   intent          String?
   confidence      Float?
-  waMessageId     String?
+  waMessageId     String?       @unique // enforces webhook-retry idempotency - see conversationRepository.findByWaMessageId
   createdAt       DateTime      @default(now())
 
   @@index([conversationId])

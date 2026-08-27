@@ -10,6 +10,7 @@
 //
 // Usage (from apps/api): npx tsx scripts/printConversations.ts
 
+import '../src/config/env';
 import { prisma } from '@academy/db';
 
 async function main() {

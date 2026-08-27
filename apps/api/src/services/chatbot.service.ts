@@ -5,20 +5,28 @@
 // This is the "Parent Enquiry Chatbot" from the spec. It runs a cheap,
 // deterministic FAQ keyword match FIRST (fast, free, 100% on-brand answers
 // for the common questions), and only falls through to the LLM for
-// open-ended phrasing the FAQ list doesn't cover. If the LLM itself isn't
-// confident, it escalates to a human rather than guessing - never robotic,
-// never wrong with false confidence.
+// open-ended phrasing the FAQ list doesn't cover. The LLM makes an explicit
+// ANSWER/MISSING_DATA/ESCALATE decision about its own reply (see
+// AiDecision) rather than a bare confidence number gating escalation -
+// a low-confidence-but-honest "I don't have that specific detail" answer
+// is still sent to the customer, never silently swallowed.
 //
 // Call order for every inbound WhatsApp message (after handoverService
 // has already checked for an explicit "talk to admin" request):
 //   1. matchFaq()          - deterministic, instant
-//   2. askAi()             - LLM fallback, grounded in the same FAQ data
-//   3. escalate if low confidence
+//   2. askAi()              - LLM fallback, grounded in FAQ text + real batch schedule data
+//   3. act on aiResult.decision (ANSWER/MISSING_DATA both reply normally, ESCALATE hands off)
+//
+// If the AI call itself fails (bad key, timeout, quota) handleMessage
+// catches it and sends an honest fallback reply - see the try/catch below.
+// This must never be silent either.
 
 import { Faq } from '@academy/db';
 import { faqRepository } from '../repositories/faq.repository';
+import { batchRepository } from '../repositories/batch.repository';
 import { conversationRepository } from '../repositories/conversation.repository';
 import { getAiProvider } from './ai/aiProviderFactory';
+import { AiCompletionResult } from './ai/aiProvider.interface';
 import { buildChatbotSystemPrompt } from '../prompts/systemPrompt';
 import { handoverService } from './handover.service';
 import { whatsappService } from './whatsapp.service';
@@ -26,7 +34,10 @@ import { logger } from '../config/logger';
 
 const log = logger.child({ module: 'chatbot-service' });
 
-const AI_CONFIDENCE_ESCALATION_THRESHOLD = 0.55;
+const AI_FALLBACK_MESSAGE =
+  "Sorry, I'm having a little trouble processing that right now - mind trying again in a moment? " +
+  'If it keeps happening, reply "talk to admin" and our team will help directly.';
+
 // Each FAQ's keyword list is topic-specific (not generic words), so a
 // single hit is already a confident match - requiring 2 was rejecting
 // ordinary short questions like "What are your fees?" which only
@@ -64,9 +75,9 @@ async function matchFaq(messageText: string): Promise<Faq | null> {
   return best?.faq ?? null;
 }
 
-async function askAi(conversationId: string, messageText: string) {
-  const faqs = await faqRepository.findAllActive();
-  const systemPrompt = buildChatbotSystemPrompt(faqs);
+async function askAi(conversationId: string, messageText: string): Promise<AiCompletionResult> {
+  const [faqs, batches] = await Promise.all([faqRepository.findAllActive(), batchRepository.findAll()]);
+  const systemPrompt = buildChatbotSystemPrompt(faqs, batches);
   const history = await conversationRepository.history(conversationId, 10);
 
   const conversationHistory = history
@@ -85,8 +96,8 @@ async function askAi(conversationId: string, messageText: string) {
  * message once handoverService.isHandoverRequest() has already returned
  * false for this message.
  */
-async function handleMessage(conversationId: string, phone: string, messageText: string) {
-  await conversationRepository.addMessage(conversationId, 'INBOUND', messageText);
+async function handleMessage(conversationId: string, phone: string, messageText: string, waMessageId?: string) {
+  await conversationRepository.addMessage(conversationId, 'INBOUND', messageText, { waMessageId });
 
   const faqMatch = await matchFaq(messageText);
   if (faqMatch) {
@@ -100,20 +111,39 @@ async function handleMessage(conversationId: string, phone: string, messageText:
     return;
   }
 
-  const aiResult = await askAi(conversationId, messageText);
-
-  if (aiResult.confidence < AI_CONFIDENCE_ESCALATION_THRESHOLD) {
-    await handoverService.escalate(conversationId, phone, `Low AI confidence (${aiResult.confidence}) for: "${messageText}"`);
-    await conversationRepository.addMessage(conversationId, 'OUTBOUND', '[escalated to human]', {
-      confidence: aiResult.confidence,
+  let aiResult: AiCompletionResult;
+  try {
+    aiResult = await askAi(conversationId, messageText);
+  } catch (err: any) {
+    log.error('AI provider failed - sending honest fallback instead of staying silent', {
+      conversationId,
+      error: err.message,
     });
+    await whatsappService.sendText(phone, AI_FALLBACK_MESSAGE);
+    await conversationRepository.addMessage(conversationId, 'OUTBOUND', AI_FALLBACK_MESSAGE, { confidence: 0 });
     return;
   }
 
+  if (aiResult.decision === 'ESCALATE') {
+    // handoverService.escalate() sends and persists its own outbound
+    // message - nothing further to send here.
+    await handoverService.escalate(
+      conversationId,
+      phone,
+      `AI escalation (confidence ${aiResult.confidence}) for: "${messageText}"`,
+    );
+    return;
+  }
+
+  // ANSWER and MISSING_DATA both reply normally - the distinction lives in
+  // what the model was instructed to say (see buildChatbotSystemPrompt),
+  // not in a different code path. `intent` records which one for observability.
   await whatsappService.sendText(phone, aiResult.text);
   await conversationRepository.addMessage(conversationId, 'OUTBOUND', aiResult.text, {
     confidence: aiResult.confidence,
+    intent: aiResult.decision,
   });
+  log.info('Resolved via AI', { conversationId, decision: aiResult.decision, confidence: aiResult.confidence });
 }
 
 export const chatbotService = { matchFaq, askAi, handleMessage };
