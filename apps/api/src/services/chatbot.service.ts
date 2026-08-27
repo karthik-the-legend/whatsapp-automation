@@ -2,20 +2,21 @@
 //
 // WHY THIS FILE EXISTS
 // ---------------------
-// This is the "Parent Enquiry Chatbot" from the spec. It runs a cheap,
-// deterministic FAQ keyword match FIRST (fast, free, 100% on-brand answers
-// for the common questions), and only falls through to the LLM for
-// open-ended phrasing the FAQ list doesn't cover. The LLM makes an explicit
-// ANSWER/MISSING_DATA/ESCALATE decision about its own reply (see
-// AiDecision) rather than a bare confidence number gating escalation -
-// a low-confidence-but-honest "I don't have that specific detail" answer
-// is still sent to the customer, never silently swallowed.
-//
-// Call order for every inbound WhatsApp message (after handoverService
-// has already checked for an explicit "talk to admin" request):
-//   1. matchFaq()          - deterministic, instant
-//   2. askAi()              - LLM fallback, grounded in FAQ text + real batch schedule data
-//   3. act on aiResult.decision (ANSWER/MISSING_DATA both reply normally, ESCALATE hands off)
+// This is the "Parent Enquiry Chatbot" from the spec. Three layers, checked
+// in order, each more expensive/less certain than the last:
+//   1. businessQueryService.answer() - deterministic, real KFA structured
+//      data (schedules/fees/belts/personal training/JKD quick facts). This
+//      is the authority for anything with exactly one correct answer -
+//      never generated, never at risk of confusing "monthly fee" with
+//      "initial total" or inventing a day a batch doesn't run on.
+//   2. matchFaq()                    - deterministic, exact-text FAQ rows
+//      for everything else that has one fixed answer (contact/holidays/etc).
+//   3. askAi()                       - LLM fallback for genuinely open-ended
+//      questions (general JKD history/philosophy, small talk). Makes an
+//      explicit ANSWER/MISSING_DATA/ESCALATE decision about its own reply
+//      (see AiDecision) rather than a bare confidence number gating
+//      escalation - a low-confidence-but-honest "I don't have that specific
+//      detail" answer is still sent to the customer, never silently swallowed.
 //
 // If the AI call itself fails (bad key, timeout, quota) handleMessage
 // catches it and sends an honest fallback reply - see the try/catch below.
@@ -25,6 +26,7 @@ import { Faq } from '@academy/db';
 import { faqRepository } from '../repositories/faq.repository';
 import { batchRepository } from '../repositories/batch.repository';
 import { conversationRepository } from '../repositories/conversation.repository';
+import { businessQueryService } from './businessQuery.service';
 import { getAiProvider } from './ai/aiProviderFactory';
 import { AiCompletionResult } from './ai/aiProvider.interface';
 import { buildChatbotSystemPrompt } from '../prompts/systemPrompt';
@@ -98,6 +100,17 @@ async function askAi(conversationId: string, messageText: string): Promise<AiCom
  */
 async function handleMessage(conversationId: string, phone: string, messageText: string, waMessageId?: string) {
   await conversationRepository.addMessage(conversationId, 'INBOUND', messageText, { waMessageId });
+
+  const businessAnswer = await businessQueryService.answer(messageText);
+  if (businessAnswer) {
+    await whatsappService.sendText(phone, businessAnswer.text);
+    await conversationRepository.addMessage(conversationId, 'OUTBOUND', businessAnswer.text, {
+      intent: businessAnswer.intent,
+      confidence: 1,
+    });
+    log.info('Resolved via deterministic business data', { conversationId, intent: businessAnswer.intent });
+    return;
+  }
 
   const faqMatch = await matchFaq(messageText);
   if (faqMatch) {

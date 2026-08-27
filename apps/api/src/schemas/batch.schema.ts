@@ -8,6 +8,10 @@ export const createBatchSchema = z.object({
   classStartTime: z
     .string()
     .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'classStartTime must be 24-hour HH:mm, e.g. "17:00"'),
+  classEndTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'classEndTime must be 24-hour HH:mm, e.g. "18:00"')
+    .optional(),
   reminderOffsetMins: z.number().int().positive().optional(),
   feeAmount: z.number().int().positive('feeAmount must be in smallest currency unit, e.g. paise'),
   feeCycle: z.enum(['MONTHLY', 'QUARTERLY']).optional(),

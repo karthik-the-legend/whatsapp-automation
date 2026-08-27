@@ -61,6 +61,7 @@ model Batch {
   name                String    // e.g. "Kids Kickboxing - Evening"
   daysOfWeek          Int[]     // 0=Sunday..6=Saturday; e.g. weekend batch = [0,6]
   classStartTime      String    // "17:00" - 24hr local time
+  classEndTime        String?   // "18:00" - 24hr local time; nullable so existing rows aren't broken by this addition
   reminderOffsetMins  Int       @default(60) // send class reminder N minutes before start
   feeAmount           Int       // smallest currency unit (paise/cents)
   feeCycle            FeeCycle  @default(MONTHLY)

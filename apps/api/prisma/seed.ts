@@ -2,16 +2,23 @@
 //
 // WHY THIS FILE EXISTS
 // ---------------------
-// The chatbot (Feature 3) needs real FAQ rows to match against - without
-// this, every question falls through to the AI provider, which needs a
-// real ANTHROPIC_API_KEY/OPENAI_API_KEY you may not have configured yet.
-// Seeding covers every category the spec lists (#3, Parent Enquiry
-// Chatbot) so you can test FAQ matching immediately, with zero AI cost.
+// Seeds two things the chatbot depends on for grounded, non-hallucinated
+// answers: FAQ rows (for exact-text-match questions) and real Batch rows
+// (for deterministic schedule/fee lookups - see businessQuery.service.ts,
+// which is the actual authority for schedules/fees/belts/personal
+// training; these Batch rows are its source of truth).
 //
-// Re-runnable: clears existing FAQs first, so running this twice doesn't
-// create duplicates. Edit the `answer` text freely to match your actual
-// academy details before running - this is meant to be customized, not
-// used verbatim in production.
+// The FAQ list below intentionally does NOT include fees, timings, age
+// eligibility, belt exams, or uniform cost - those are now owned by
+// businessQuery.service.ts against real KFA data instead of placeholder
+// text, so keeping them here as FAQ rows would risk a stale/wrong answer
+// winning a keyword match. What remains here is either genuinely generic
+// (contact/holidays/documents) or deliberately honest about not having
+// unverified specifics (location/trial/tournament) rather than inventing
+// them - see the "don't invent" list this seed was written against.
+//
+// Re-runnable: clears existing FAQs first. Batches are upserted by name so
+// re-running doesn't create duplicates or orphan a real Student's batchId.
 
 import '../src/config/env';
 import { prisma, FaqCategory } from '@academy/db';
@@ -25,51 +32,27 @@ interface SeedFaq {
 
 const faqs: SeedFaq[] = [
   {
-    category: 'FEES',
-    question: 'What are your fees?',
-    answer: 'Our monthly fee is ₹2,500 per student. We also offer quarterly plans and sibling discounts - reply "talk to admin" if you\'d like the exact breakdown for your batch.',
-    keywords: ['fee', 'fees', 'cost', 'price', 'charges'],
-  },
-  {
-    category: 'TIMINGS',
-    question: 'What are your class timings?',
-    answer: 'We run morning batches (6-7 AM), evening batches (5-7 PM), and weekend-only batches. Let us know your preferred time and we\'ll suggest the best batch for you!',
-    keywords: ['timing', 'timings', 'schedule', 'hours', 'time', 'class time'],
-  },
-  {
-    category: 'AGE_ELIGIBILITY',
-    question: 'What age can my child join?',
-    answer: 'We accept students from age 5 and up, with separate kids, teen, and adult batches so training is age-appropriate.',
-    keywords: ['age', 'eligibility', 'eligible', 'old enough'],
-  },
-  {
-    category: 'TRIAL_CLASS',
-    question: 'Can we try a trial class first?',
-    answer: 'Absolutely! We offer one free trial class so you can experience a session before enrolling. Reply "trial" and we\'ll help you pick a slot.',
-    keywords: ['trial', 'demo', 'try a class', 'free class'],
-  },
-  {
-    category: 'LOCATION',
-    question: 'Where are you located?',
-    answer: 'We\'re located in Bengaluru - message us here and we\'ll share the exact address and a map link.',
-    keywords: ['location', 'address', 'located', 'directions'],
-  },
-  {
     category: 'CONTACT',
     question: 'How can I contact the academy?',
     answer: 'You can message us right here on WhatsApp anytime, or reply "talk to admin" to speak with our team directly.',
     keywords: ['contact', 'phone number', 'call you', 'reach you'],
   },
   {
-    category: 'BELT_EXAM',
-    question: 'When is the next belt exam?',
-    answer: 'Belt exams are held every 3 months based on instructor recommendation. We\'ll announce the exact date to your batch in advance.',
-    keywords: ['belt exam', 'grading', 'next belt', 'promotion test'],
+    category: 'LOCATION',
+    question: 'Where are you located?',
+    answer: 'I don\'t have our exact address confirmed here yet - reply "talk to admin" and our team will share the exact location with you.',
+    keywords: ['location', 'address', 'located', 'directions'],
+  },
+  {
+    category: 'TRIAL_CLASS',
+    question: 'Can we try a trial class first?',
+    answer: 'I don\'t have trial class details confirmed here right now - reply "talk to admin" and our team can let you know what\'s currently available.',
+    keywords: ['trial', 'demo', 'try a class', 'free class'],
   },
   {
     category: 'TOURNAMENT',
     question: 'Do you have tournaments?',
-    answer: 'Yes! We regularly participate in and host tournaments. Announcements go out to all active students - keep an eye on your WhatsApp!',
+    answer: 'I don\'t have tournament details confirmed here right now - reply "talk to admin" for the latest on any upcoming events.',
     keywords: ['tournament', 'competition', 'compete'],
   },
   {
@@ -81,7 +64,7 @@ const faqs: SeedFaq[] = [
   {
     category: 'ADMISSION',
     question: 'How do I enroll my child?',
-    answer: 'Enrollment is simple - reply "trial" to book a free trial class first, and our team will guide you through admission right after.',
+    answer: 'To enroll, reply "talk to admin" and our team will guide you through the registration process.',
     keywords: ['admission', 'enroll', 'enrolment', 'sign up', 'join'],
   },
   {
@@ -90,12 +73,34 @@ const faqs: SeedFaq[] = [
     answer: 'Just a filled admission form and a copy of an ID/age proof for the student. We\'ll send you the admission form on request.',
     keywords: ['documents', 'documents required', 'id proof', 'paperwork'],
   },
-  {
-    category: 'UNIFORM',
-    question: 'What uniform do I need to buy?',
-    answer: 'A standard training uniform (gi) is required, available for purchase at the academy - approx ₹800. Belt color is assigned as you progress.',
-    keywords: ['uniform', 'gi', 'dobok', 'kit'],
-  },
+];
+
+interface SeedBatch {
+  name: string;
+  daysOfWeek: number[]; // 0=Sunday..6=Saturday
+  classStartTime: string;
+  classEndTime: string;
+  feeAmount: number; // paise
+  minAge?: number;
+}
+
+// Verified KFA business data - see businessQuery.service.ts for how this
+// is turned into deterministic answers. Junior batches are numbered 1-6
+// per the academy's own numbering; adult batches 1-2. minAge is only set
+// where the academy actually stated one (junior: 4+) - no adult minimum
+// age was given, so it's deliberately left unset rather than guessed.
+const JUNIOR_MONTHLY_FEE_PAISE = 150000; // ₹1,500
+const ADULT_MONTHLY_FEE_PAISE = 200000; // ₹2,000
+
+const batches: SeedBatch[] = [
+  { name: 'Junior JKD Batch 1', daysOfWeek: [1, 3], classStartTime: '17:00', classEndTime: '18:00', feeAmount: JUNIOR_MONTHLY_FEE_PAISE, minAge: 4 },
+  { name: 'Junior JKD Batch 2', daysOfWeek: [6, 0], classStartTime: '09:30', classEndTime: '10:30', feeAmount: JUNIOR_MONTHLY_FEE_PAISE, minAge: 4 },
+  { name: 'Junior JKD Batch 3', daysOfWeek: [0], classStartTime: '16:00', classEndTime: '17:00', feeAmount: JUNIOR_MONTHLY_FEE_PAISE, minAge: 4 },
+  { name: 'Junior JKD Batch 4', daysOfWeek: [1, 3], classStartTime: '18:00', classEndTime: '19:00', feeAmount: JUNIOR_MONTHLY_FEE_PAISE, minAge: 4 },
+  { name: 'Junior JKD Batch 5', daysOfWeek: [6, 0], classStartTime: '10:30', classEndTime: '11:30', feeAmount: JUNIOR_MONTHLY_FEE_PAISE, minAge: 4 },
+  { name: 'Junior JKD Batch 6', daysOfWeek: [6, 0], classStartTime: '14:00', classEndTime: '15:00', feeAmount: JUNIOR_MONTHLY_FEE_PAISE, minAge: 4 },
+  { name: 'Adult Batch 1', daysOfWeek: [1, 3], classStartTime: '06:30', classEndTime: '07:30', feeAmount: ADULT_MONTHLY_FEE_PAISE },
+  { name: 'Adult Batch 2', daysOfWeek: [1, 3], classStartTime: '19:00', classEndTime: '20:00', feeAmount: ADULT_MONTHLY_FEE_PAISE },
 ];
 
 async function main() {
@@ -105,7 +110,33 @@ async function main() {
   console.log(`Seeding ${faqs.length} FAQs...`);
   await prisma.faq.createMany({ data: faqs.map((f) => ({ ...f, active: true })) });
 
-  console.log('Done. Seeded categories:', faqs.map((f) => f.category).join(', '));
+  console.log(`Upserting ${batches.length} real KFA batches...`);
+  for (const b of batches) {
+    const existing = await prisma.batch.findFirst({ where: { name: b.name } });
+    if (existing) {
+      await prisma.batch.update({ where: { id: existing.id }, data: b });
+    } else {
+      await prisma.batch.create({ data: b });
+    }
+  }
+
+  // The old placeholder "Evening Kickboxing" test batches (created via the
+  // admin dashboard while testing Feature 12) don't match any real KFA
+  // batch name and would otherwise show up as a fabricated 9th batch in
+  // every schedule answer - remove them, but only if nothing real is
+  // still linked to one (never delete out from under a real student).
+  const stale = await prisma.batch.findMany({ where: { name: { notIn: batches.map((b) => b.name) } } });
+  for (const s of stale) {
+    const linkedStudents = await prisma.student.count({ where: { batchId: s.id } });
+    if (linkedStudents === 0) {
+      await prisma.batch.delete({ where: { id: s.id } });
+      console.log(`Removed stale placeholder batch: ${s.name} (${s.id})`);
+    } else {
+      console.log(`Left stale batch "${s.name}" (${s.id}) in place - ${linkedStudents} student(s) still linked to it.`);
+    }
+  }
+
+  console.log('Done.');
 }
 
 main()

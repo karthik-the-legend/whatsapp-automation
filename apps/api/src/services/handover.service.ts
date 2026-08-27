@@ -10,6 +10,8 @@
 const HANDOVER_PHRASES = [
   'talk to admin',
   'talk to a human',
+  'talk to a person',
+  'speak to a person',
   'call me',
   'speak to someone',
   'human please',
