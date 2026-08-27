@@ -14,7 +14,8 @@
     "debug:conversations": "tsx scripts/printConversations.ts",
     "jobs:trigger": "tsx scripts/triggerJob.ts",
     "admin:create": "tsx scripts/createAdminUser.ts",
-    "test:business-queries": "tsx scripts/testBusinessQueries.ts"
+    "test:business-queries": "tsx scripts/testBusinessQueries.ts",
+    "test:customer-memory": "tsx scripts/testCustomerMemory.ts"
   },
   "dependencies": {
     "@academy/db": "*",

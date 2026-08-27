@@ -30,9 +30,17 @@ import { businessQueryService } from './businessQuery.service';
 import { getAiProvider } from './ai/aiProviderFactory';
 import { AiCompletionResult } from './ai/aiProvider.interface';
 import { buildChatbotSystemPrompt } from '../prompts/systemPrompt';
+import { detectGreeting } from '../utils/greetingDetector';
+import { composeGreeting, composeGreetingPrefix } from '../prompts/greetingResponses';
 import { handoverService } from './handover.service';
 import { whatsappService } from './whatsapp.service';
 import { logger } from '../config/logger';
+
+export interface CustomerContext {
+  isFirstInteraction: boolean;
+  customerName: string | null;
+  interactionCount: number;
+}
 
 const log = logger.child({ module: 'chatbot-service' });
 
@@ -77,9 +85,15 @@ async function matchFaq(messageText: string): Promise<Faq | null> {
   return best?.faq ?? null;
 }
 
-async function askAi(conversationId: string, messageText: string): Promise<AiCompletionResult> {
+async function askAi(conversationId: string, messageText: string, customerContext?: CustomerContext): Promise<AiCompletionResult> {
   const [faqs, batches] = await Promise.all([faqRepository.findAllActive(), batchRepository.findAll()]);
-  const systemPrompt = buildChatbotSystemPrompt(faqs, batches);
+  const systemPrompt = buildChatbotSystemPrompt(
+    faqs,
+    batches,
+    customerContext
+      ? { name: customerContext.customerName, isFirstInteraction: customerContext.isFirstInteraction, interactionCount: customerContext.interactionCount }
+      : undefined,
+  );
   const history = await conversationRepository.history(conversationId, 10);
 
   const conversationHistory = history
@@ -93,53 +107,81 @@ async function askAi(conversationId: string, messageText: string): Promise<AiCom
   return provider.complete({ systemPrompt, userMessage: messageText, conversationHistory });
 }
 
+/** Sends `text` (with `prefix` prepended if given), persists the exact composed text, and logs. */
+async function reply(conversationId: string, phone: string, text: string, prefix: string | null, meta: { intent: string; confidence: number }) {
+  const composed = prefix ? `${prefix}\n\n${text}` : text;
+  await whatsappService.sendText(phone, composed);
+  await conversationRepository.addMessage(conversationId, 'OUTBOUND', composed, meta);
+}
+
 /**
  * Main entry point, called by the webhook handler for every inbound text
  * message once handoverService.isHandoverRequest() has already returned
- * false for this message.
+ * false for this message. customerContext comes from customerService (see
+ * whatsapp.webhook.ts) - it's what lets Neha introduce herself once and
+ * never again, without needing the AI to track that itself.
  */
-async function handleMessage(conversationId: string, phone: string, messageText: string, waMessageId?: string) {
+async function handleMessage(
+  conversationId: string,
+  phone: string,
+  messageText: string,
+  waMessageId?: string,
+  customerContext?: CustomerContext,
+) {
   await conversationRepository.addMessage(conversationId, 'INBOUND', messageText, { waMessageId });
 
-  const businessAnswer = await businessQueryService.answer(messageText);
-  if (businessAnswer) {
-    await whatsappService.sendText(phone, businessAnswer.text);
-    await conversationRepository.addMessage(conversationId, 'OUTBOUND', businessAnswer.text, {
-      intent: businessAnswer.intent,
-      confidence: 1,
-    });
-    log.info('Resolved via deterministic business data', { conversationId, intent: businessAnswer.intent });
+  const { isGreeting, remainder } = detectGreeting(messageText);
+  const greetingCtx = { isFirstInteraction: customerContext?.isFirstInteraction ?? false, name: customerContext?.customerName ?? null };
+
+  // Pure greeting - nothing else to answer, so this is answered
+  // deterministically (guarantees "Neha, receptionist at KFA" is stated
+  // correctly on a first contact, and never restated to a returning one)
+  // without spending an AI call or touching business/FAQ lookups at all.
+  if (isGreeting && !remainder) {
+    const text = composeGreeting(greetingCtx);
+    await whatsappService.sendText(phone, text);
+    await conversationRepository.addMessage(conversationId, 'OUTBOUND', text, { intent: 'GREETING', confidence: 1 });
+    log.info('Resolved as pure greeting', { conversationId, isFirstInteraction: greetingCtx.isFirstInteraction });
     return;
   }
 
-  const faqMatch = await matchFaq(messageText);
+  // "Hi, what are the fees?" - answer the real question, just with a short
+  // greeting lead-in prepended (mechanically, not left to the AI to
+  // remember - the intro is a hard requirement, not a style choice).
+  const greetingPrefix = isGreeting ? composeGreetingPrefix(greetingCtx) : null;
+  const effectiveText = isGreeting ? remainder : messageText;
+
+  const businessAnswer = await businessQueryService.answer(effectiveText);
+  if (businessAnswer) {
+    await reply(conversationId, phone, businessAnswer.text, greetingPrefix, { intent: businessAnswer.intent, confidence: 1 });
+    log.info('Resolved via deterministic business data', { conversationId, intent: businessAnswer.intent, greeted: isGreeting });
+    return;
+  }
+
+  const faqMatch = await matchFaq(effectiveText);
   if (faqMatch) {
-    await whatsappService.sendText(phone, faqMatch.answer);
-    await conversationRepository.addMessage(conversationId, 'OUTBOUND', faqMatch.answer, {
-      intent: faqMatch.category,
-      confidence: 1,
-    });
+    await reply(conversationId, phone, faqMatch.answer, greetingPrefix, { intent: faqMatch.category, confidence: 1 });
     await conversationRepository.setIntent(conversationId, faqMatch.category);
-    log.info('Resolved via FAQ match', { conversationId, category: faqMatch.category });
+    log.info('Resolved via FAQ match', { conversationId, category: faqMatch.category, greeted: isGreeting });
     return;
   }
 
   let aiResult: AiCompletionResult;
   try {
-    aiResult = await askAi(conversationId, messageText);
+    aiResult = await askAi(conversationId, effectiveText, customerContext);
   } catch (err: any) {
     log.error('AI provider failed - sending honest fallback instead of staying silent', {
       conversationId,
       error: err.message,
     });
-    await whatsappService.sendText(phone, AI_FALLBACK_MESSAGE);
-    await conversationRepository.addMessage(conversationId, 'OUTBOUND', AI_FALLBACK_MESSAGE, { confidence: 0 });
+    await reply(conversationId, phone, AI_FALLBACK_MESSAGE, greetingPrefix, { intent: 'AI_ERROR', confidence: 0 });
     return;
   }
 
   if (aiResult.decision === 'ESCALATE') {
     // handoverService.escalate() sends and persists its own outbound
-    // message - nothing further to send here.
+    // message - nothing further to send here. A greeting prefix isn't
+    // worth layering onto an escalation ack, so it's intentionally dropped.
     await handoverService.escalate(
       conversationId,
       phone,
@@ -151,12 +193,8 @@ async function handleMessage(conversationId: string, phone: string, messageText:
   // ANSWER and MISSING_DATA both reply normally - the distinction lives in
   // what the model was instructed to say (see buildChatbotSystemPrompt),
   // not in a different code path. `intent` records which one for observability.
-  await whatsappService.sendText(phone, aiResult.text);
-  await conversationRepository.addMessage(conversationId, 'OUTBOUND', aiResult.text, {
-    confidence: aiResult.confidence,
-    intent: aiResult.decision,
-  });
-  log.info('Resolved via AI', { conversationId, decision: aiResult.decision, confidence: aiResult.confidence });
+  await reply(conversationId, phone, aiResult.text, greetingPrefix, { intent: aiResult.decision, confidence: aiResult.confidence });
+  log.info('Resolved via AI', { conversationId, decision: aiResult.decision, confidence: aiResult.confidence, greeted: isGreeting });
 }
 
 export const chatbotService = { matchFaq, askAi, handleMessage };

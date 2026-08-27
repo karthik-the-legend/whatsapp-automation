@@ -9,8 +9,8 @@ async function findOpenByPhone(phone: string): Promise<Conversation | null> {
   });
 }
 
-async function createForPhone(phone: string, studentId?: string): Promise<Conversation> {
-  return prisma.conversation.create({ data: { phone, studentId } });
+async function createForPhone(phone: string, studentId?: string, customerId?: string): Promise<Conversation> {
+  return prisma.conversation.create({ data: { phone, studentId, customerId } });
 }
 
 async function touch(id: string) {

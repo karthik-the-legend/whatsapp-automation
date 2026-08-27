@@ -167,7 +167,12 @@ async function answerPersonalTrainingQuestion(text: string): Promise<BusinessQue
 async function answerAgeEligibilityQuestion(text: string): Promise<BusinessQueryResult | null> {
   const asksAge = has(text, 'age', 'old enough', 'how old', 'years old');
   const mentionsChild = has(text, 'child', 'children', 'kid', 'kids', 'son', 'daughter', 'junior');
-  if (!asksAge && !(mentionsChild && has(text, 'join', 'enroll', 'start', 'eligible'))) return null;
+  // "My daughter is 6" / "my son is 6" - a bare number right after "is",
+  // in a sentence that's already about a child, is almost certainly stating
+  // their age, not a time of day. Without this, that number gets picked up
+  // by the schedule handler's time parser instead - a real bug found via testing.
+  const statesChildAge = mentionsChild && /\bis\s+\d{1,2}\b/.test(text);
+  if (!asksAge && !statesChildAge && !(mentionsChild && has(text, 'join', 'enroll', 'start', 'eligible'))) return null;
 
   return {
     intent: 'JUNIOR_PROGRAM',
@@ -296,7 +301,12 @@ async function answerScheduleQuestion(text: string): Promise<BusinessQueryResult
   const timeCandidates = detectTimeMinutes(text);
   const genericScheduleWord = has(text, 'class', 'classes', 'batch', 'batches', 'timing', 'timings', 'schedule');
 
-  if (!days.length && !asksJuniorTimings && !asksAdultTimings && !asksMorning && !asksEvening && !asksWeekend && timeCandidates.length === 0 && !genericScheduleWord) {
+  // A bare number alone (timeCandidates) is deliberately NOT enough to open
+  // this gate by itself - "my daughter is 6" would otherwise get misread as
+  // "class at 6" (a real bug found via testing). It's only used below to
+  // REFINE an already-established schedule question ("is there a batch at
+  // 10:30" already has "batch" as a signal; "Sunday at 4" already has the day).
+  if (!days.length && !asksJuniorTimings && !asksAdultTimings && !asksMorning && !asksEvening && !asksWeekend && !genericScheduleWord) {
     return null;
   }
 

@@ -194,11 +194,35 @@ enum FaqCategory {
   OTHER
 }
 
+// A CustomerProfile is deliberately NOT the same thing as a Student - it's
+// created for ANY WhatsApp number that has ever messaged in, enrolled or
+// not, and it's the thing that actually persists across conversations
+// (unlike Conversation, which is created fresh every time the previous one
+// is CLOSED). This is what lets the receptionist (Neha) recognize a
+// returning customer even after their conversation closed, got escalated,
+// or the server restarted - see customer.service.ts / businessQuery.service.ts's
+// sibling, greeting logic in chatbot.service.ts.
+model CustomerProfile {
+  id                String    @id @default(cuid())
+  phone             String    @unique // WhatsApp number, E.164 - the persistent identity
+  name              String?   // only ever set from an explicit self-identification the customer typed ("my name is X") - never guessed
+  firstContactAt    DateTime  @default(now())
+  lastContactAt     DateTime  @default(now())
+  interactionCount  Int       @default(0)
+
+  conversations     Conversation[]
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
 model Conversation {
   id                String             @id @default(cuid())
   student           Student?           @relation(fields: [studentId], references: [id])
   studentId         String?
-  phone             String             // always set, even before a Student record exists
+  customer          CustomerProfile?   @relation(fields: [customerId], references: [id])
+  customerId        String?
+  phone             String             // always set, even before a Student/CustomerProfile record exists
   status            ConversationStatus @default(BOT)
   currentIntent     String?
   lastMessageAt     DateTime           @default(now())
@@ -212,6 +236,7 @@ model Conversation {
 
   @@index([phone])
   @@index([status])
+  @@index([customerId])
 }
 
 enum ConversationStatus {

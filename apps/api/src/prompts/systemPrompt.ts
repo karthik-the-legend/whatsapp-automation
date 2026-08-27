@@ -49,11 +49,28 @@ const JKD_REFERENCE = `Jeet Kune Do (JKD) reference knowledge, for when a custom
 
 When explaining JKD, keep it customer-friendly and accurate. Do NOT describe JKD as just another fixed traditional style, do NOT claim it has one universally standardized curriculum worldwide, do NOT claim it's identical to MMA or that it was invented as MMA. ${KFA_SHORT_NAME} teaches JKD as its junior martial arts program - say that plainly, but do NOT claim ${KFA_SHORT_NAME} teaches Bruce Lee's exact original curriculum, and do NOT imply ${KFA_SHORT_NAME} is certified by the Bruce Lee Foundation - neither claim is something you have evidence for.`;
 
-export function buildChatbotSystemPrompt(faqs: Faq[], batches: Batch[] = []): string {
+export interface CustomerPromptContext {
+  name: string | null;
+  isFirstInteraction: boolean;
+  interactionCount: number;
+}
+
+function formatCustomerContext(ctx?: CustomerPromptContext): string {
+  if (!ctx) return '';
+  const lines = [
+    `Returning customer: ${!ctx.isFirstInteraction}`,
+    `Interaction count: ${ctx.interactionCount}`,
+    ctx.name ? `Customer name: ${ctx.name}` : 'Customer name: not known - do not guess or invent one',
+  ];
+  return `\nCUSTOMER CONTEXT (for your own awareness only - never mention this data, "interaction count", "profile", "stored", or any database/memory concept to the customer; if you use their name, do it naturally and only occasionally, not in every reply):\n${lines.join('\n')}\n`;
+}
+
+export function buildChatbotSystemPrompt(faqs: Faq[], batches: Batch[] = [], customerContext?: CustomerPromptContext): string {
   const faqText = faqs.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n');
   const scheduleText = formatBatchSchedule(batches);
 
-  return `You are the friendly front-desk assistant for ${env.ACADEMY_NAME} (${KFA_SHORT_NAME}), a martial arts academy teaching children and adults, chatting with parents and students on WhatsApp. Talk like a genuinely warm, switched-on human who works there and enjoys the job - not like a script reading canned lines. Vary your phrasing, use natural conversational rhythm, react to what the person actually said, and let a little personality and warmth show. WhatsApp-appropriate length (usually a few sentences, longer only if the question genuinely needs it), no markdown formatting.
+  return `You are Neha, the receptionist at ${env.ACADEMY_NAME} (${KFA_SHORT_NAME}), a martial arts academy teaching children and adults, chatting with parents and students on WhatsApp. Talk like a genuinely warm, switched-on human who works there and enjoys the job - not like a script reading canned lines, and never say you're an AI/assistant/bot. Vary your phrasing, use natural conversational rhythm, react to what the person actually said, and let a little personality and warmth show. WhatsApp-appropriate length (usually a few sentences, longer only if the question genuinely needs it), no markdown formatting.
+${formatCustomerContext(customerContext)}
 
 Schedules, fees, belt order, personal training days, and quick Jeet Kune Do facts are usually answered before your turn even starts (a deterministic lookup against real academy data handles those). If one of those somehow still reaches you, treat REAL CLASS SCHEDULE below as the only source of truth for it - never contradict it, never invent a day/time/fee it doesn't list.
 

@@ -14,6 +14,7 @@ import { conversationRepository } from '../repositories/conversation.repository'
 import { studentRepository } from '../repositories/student.repository';
 import { handoverService } from '../services/handover.service';
 import { chatbotService } from '../services/chatbot.service';
+import { customerService } from '../services/customer.service';
 import { whatsappService } from '../services/whatsapp.service';
 import { logger } from '../config/logger';
 
@@ -25,12 +26,12 @@ interface InboundTextMessage {
   text: string;
 }
 
-async function getOrCreateConversation(phone: string) {
+async function getOrCreateConversation(phone: string, customerId?: string) {
   const existing = await conversationRepository.findOpenByPhone(phone);
   if (existing) return existing;
 
   const student = await studentRepository.findByPhone(phone);
-  return conversationRepository.createForPhone(phone, student?.id);
+  return conversationRepository.createForPhone(phone, student?.id, customerId);
 }
 
 /**
@@ -48,9 +49,17 @@ async function handleInboundMessage(message: InboundTextMessage): Promise<void> 
     return;
   }
 
+  // Customer identity is looked up/created BEFORE anything else, for every
+  // message that reaches this point (including ones that'll just get an
+  // escalation ack) - this is what makes "does Neha remember this person"
+  // survive a closed conversation, an escalation, or a server restart:
+  // it's keyed by phone number in its own persistent table, not by
+  // Conversation, which gets recreated every time the last one closes.
+  const { profile, isFirstInteraction } = await customerService.recordInboundMessage(message.from, message.text);
+
   await whatsappService.markAsRead(message.waMessageId);
 
-  const conversation = await getOrCreateConversation(message.from);
+  const conversation = await getOrCreateConversation(message.from, profile.id);
   await conversationRepository.touch(conversation.id);
 
   const alreadyEscalated = conversation.status === 'HUMAN_ACTIVE' || conversation.status === 'ESCALATED';
@@ -75,7 +84,11 @@ async function handleInboundMessage(message: InboundTextMessage): Promise<void> 
     return;
   }
 
-  await chatbotService.handleMessage(conversation.id, message.from, message.text, message.waMessageId);
+  await chatbotService.handleMessage(conversation.id, message.from, message.text, message.waMessageId, {
+    isFirstInteraction,
+    customerName: profile.name,
+    interactionCount: profile.interactionCount,
+  });
 }
 
 export const whatsappWebhookHandler = { handleInboundMessage, getOrCreateConversation };
