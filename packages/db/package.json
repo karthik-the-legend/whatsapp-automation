@@ -2,10 +2,12 @@
   "name": "@academy/db",
   "version": "0.1.0",
   "private": true,
-  "main": "index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "generate": "prisma generate --schema=../../apps/api/prisma/schema.prisma",
-    "migrate": "prisma migrate dev --schema=../../apps/api/prisma/schema.prisma"
+    "migrate": "prisma migrate dev --schema=../../apps/api/prisma/schema.prisma",
+    "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@prisma/client": "^5.16.1"

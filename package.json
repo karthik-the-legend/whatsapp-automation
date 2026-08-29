@@ -13,7 +13,9 @@
     "build:web": "npm run build --workspace=@academy/web",
     "typecheck": "npm run typecheck --workspace=@academy/api && npm run typecheck --workspace=@academy/web",
     "db:generate": "npm run generate --workspace=@academy/db",
+    "db:build": "npm run build --workspace=@academy/db",
     "db:migrate": "npm run migrate --workspace=@academy/db",
+    "build:render": "npm install && npm run db:generate && npm run db:build && npm run build:api",
     "jobs:schedule": "npm run jobs:schedule --workspace=@academy/api",
     "jobs:worker": "npm run jobs:worker --workspace=@academy/api"
   },
