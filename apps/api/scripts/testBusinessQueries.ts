@@ -3,11 +3,10 @@
 // WHY THIS FILE EXISTS
 // ---------------------
 // Automated regression coverage for businessQuery.service.ts - the
-// deterministic layer that answers schedule/fee/belt/personal-training/JKD
-// quick-fact questions from real KFA data before the AI ever runs. No test
-// framework is installed in this project, so this is a plain assert-and-
-// exit-nonzero-on-failure script, run directly with tsx - same philosophy
-// as the rest of scripts/ (real code path, no mocking).
+// deterministic layer that answers schedule/branch/fee/KOMBAT EXERCISE
+// questions from real KOMBAT Fitness Academy data before the AI ever
+// runs. No test framework is installed in this project, so this is a
+// plain assert-and-exit-nonzero-on-failure script, run directly with tsx.
 //
 // Usage: npm run test:business-queries
 
@@ -20,38 +19,48 @@ interface Case {
   question: string;
   /** Every one of these substrings must appear in the answer text (case-insensitive). */
   mustInclude: string[];
-  /** None of these may appear - guards against inventing facts (e.g. a wrong day/amount). */
+  /** None of these may appear - guards against inventing facts or conflating branches/disciplines. */
   mustNotInclude?: string[];
 }
 
 const cases: Case[] = [
-  { label: 'TEST 7: Monday classes', question: 'Are there classes on Monday?', mustInclude: ['5 PM', '6 PM', '6:30 AM', '7 PM'] },
-  { label: 'TEST 8: junior timings (all 6 batches)', question: 'What are the junior timings?', mustInclude: ['5 PM', '9:30 AM', '4 PM', '6 PM', '10:30 AM', '2 PM'] },
-  { label: 'TEST 9: adult timings (both batches)', question: 'What are the adult timings?', mustInclude: ['6:30 AM', '7 PM'], mustNotInclude: ['9:30 AM'] },
-  { label: 'TEST 10: kids monthly fee', question: 'What is the kids monthly fee?', mustInclude: ['1,500'], mustNotInclude: ['4,500', '2,000'] },
-  { label: 'TEST 11: initial payment for child', question: 'How much do I pay initially for my child?', mustInclude: ['4,500'] },
-  { label: 'TEST 12: why 4500 (breakdown)', question: 'Why is it 4500?', mustInclude: ['4,500', '1,500 monthly', '1,500 registration', '1,500 for the JKD uniform'] },
-  { label: 'TEST 13: adult fee (must not be 3500/month)', question: 'What is adult fee?', mustInclude: ['2,000', '3,500'], mustNotInclude: ['monthly tuition is ₹3,500'] },
-  { label: 'TEST 14: junior age', question: 'What age can kids join?', mustInclude: ['4'] },
-  { label: 'TEST 15: belt order', question: 'What is the belt order?', mustInclude: ['White', 'Yellow', 'Orange', 'Green', 'Purple', 'Blue', 'Brown', 'Red', 'Black'] },
-  { label: 'TEST 16: personal training exists', question: 'Do you have personal training?', mustInclude: ['Tuesday', 'Thursday'] },
-  { label: 'TEST 17: personal training must NOT invent a fixed time', question: 'Is personal training at 5 PM?', mustInclude: ['arranged'], mustNotInclude: ['Yes, 5 PM', 'personal training is at 5'] },
-  { label: 'TEST 18: batch at 10:30', question: 'Is there a batch at 10:30?', mustInclude: ['10:30 AM'] },
-  { label: 'TEST 19: Sunday at 4 (bare hour, no am/pm)', question: 'Is there a class Sunday at 4?', mustInclude: ['4 PM'] },
-  { label: 'TEST 20: Batch 3 on Monday must correct, not invent', question: 'Is Batch 3 available Monday?', mustInclude: ['Sunday'], mustNotInclude: ['Monday 4', 'Yes, Monday'] },
-  { label: 'JKD meaning', question: 'What is the meaning of Jeet Kune Do?', mustInclude: ['Way of the Intercepting Fist'] },
-  { label: 'JKD founder', question: 'Who created Jeet Kune Do?', mustInclude: ['Bruce Lee'] },
-  { label: 'JKD year (must not fall to founder answer)', question: 'When was Jeet Kune Do created?', mustInclude: ['1967', 'July 9'] },
-  { label: 'What martial art for kids', question: 'What martial art do you teach kids?', mustInclude: ['Jeet Kune Do'] },
-  // No weekday batch (Mon/Wed) should appear in a weekend-only answer -
-  // Junior Batch 3's own end time is "5 PM" so that substring isn't a safe
-  // negative check here (it's real data, not a leak), unlike "6:30 AM"
-  // (Adult Batch 1, weekdays only) which genuinely must never appear.
-  { label: 'Weekend batches', question: 'What are the weekend batches?', mustInclude: ['9:30 AM', '10:30 AM', '2 PM'], mustNotInclude: ['6:30 AM'] },
-  { label: 'Age-based recommendation (no invented batch assignment)', question: 'My child is 6 years old. Which batch?', mustInclude: ['4'], mustNotInclude: ['Batch 1 is best', 'you should join batch'] },
-  { label: 'Ambiguous fee question asks for clarification', question: 'What is the monthly fee?', mustInclude: ['junior', 'adult'] },
-  { label: 'Uniform fee (must match real ₹1,500, not old placeholder ₹800)', question: 'How much is the JKD uniform?', mustInclude: ['1,500'], mustNotInclude: ['800'] },
-  { label: 'Belt exam yes/no (plural "exams" must still match)', question: 'Do you conduct belt exams?', mustInclude: ['grading', 'examinations'] },
+  // --- Schedule: Branch 1 Kung Fu ---
+  { label: 'Monday Kung Fu classes (Branch 1)', question: 'Are there Kung Fu classes on Monday?', mustInclude: ['5 PM', '6 PM'] },
+  { label: 'Kung Fu timings - all 6 batches', question: 'What are the Kung Fu timings?', mustInclude: ['5 PM', '9:30 AM', '4 PM', '6 PM', '10:30 AM', '2 PM'] },
+  { label: 'Weekend Kung Fu batches', question: 'What Kung Fu batches are on the weekend?', mustInclude: ['9:30 AM', '4 PM', '10:30 AM', '2 PM'], mustNotInclude: ['5 PM–6 PM'] },
+  { label: 'Batch 3 exact time', question: 'What time is Kung Fu batch 3?', mustInclude: ['4 PM', '5 PM'] },
+  { label: 'Is Batch 3 available Monday - must correct, not invent', question: 'Is Kung Fu Batch 3 available on Monday?', mustInclude: ['Saturday', 'Sunday'], mustNotInclude: ['Yes, Monday'] },
+  { label: 'Sunday at 4 (bare hour, no am/pm)', question: 'Is there a Kung Fu class Sunday at 4?', mustInclude: ['4 PM'] },
+
+  // --- Schedule: Senior batches ---
+  { label: 'Senior batch timings', question: 'What are the senior batch timings?', mustInclude: ['6:30 AM', '7 PM'], mustNotInclude: ['9:30 AM'] },
+  { label: 'Senior batch audience not invented as age number', question: 'Who are the senior classes for?', mustInclude: ['6:30 AM'] },
+
+  // --- BRANCH RULE: Hosa Road must never be conflated with Branch 1 ---
+  { label: 'Hosa Road Kung Fu - only that branch\'s batch', question: 'Do you have Kung Fu at Hosa Road?', mustInclude: ['5:30 PM', '6:30 PM'], mustNotInclude: ['5 PM–6 PM', '9:30 AM'] },
+  { label: 'Generic Kung Fu question does not silently merge branches into one list', question: 'What are the Kung Fu timings?', mustInclude: ['Branch 1'] },
+
+  // --- Dance ---
+  { label: 'Dance classes for children', question: 'Do you have dance classes for kids?', mustInclude: ['5 PM', '6 PM'], mustNotInclude: ['Adults'] },
+  { label: 'Dance classes for adults', question: 'Do you have dance classes for adults?', mustInclude: ['6 PM', '7 PM'] },
+  { label: 'Dance classes unspecified audience shows both', question: 'What dance classes do you have?', mustInclude: ['Children', 'Adults'] },
+
+  // --- KOMBAT EXERCISE ---
+  // "AM"/"PM" as bare substrings falsely match inside ordinary words like
+  // "team" or "exam" - check for an actual clock-time pattern instead.
+  { label: 'KOMBAT EXERCISE basics, no invented timing/fee', question: 'Tell me about KOMBAT EXERCISE', mustInclude: ['55-minute', 'virtual'], mustNotInclude: ['₹'] },
+
+  // --- Fees: must NEVER give a number, ever ---
+  { label: 'Fee question gives no invented number', question: 'What are your fees?', mustInclude: ["don't have"], mustNotInclude: ['₹', '1,500', '4,500', '2,000', '3,500'] },
+  { label: 'Kids fee question still gives no number', question: 'What is the monthly fee for kids?', mustInclude: ["don't have"], mustNotInclude: ['₹'] },
+  { label: 'Uniform fee question gives no number (old placeholder ₹800/₹1,500 must not reappear)', question: 'How much is the uniform?', mustInclude: ["don't have"], mustNotInclude: ['₹', '800', '1,500'] },
+
+  // --- Unconfirmed disciplines: must not be presented as available ---
+  { label: 'Boxing not falsely presented as an active batch', question: 'Do you have boxing classes?', mustInclude: ["don't have", 'Kung Fu'], mustNotInclude: ['5 PM–6 PM', 'Yes, boxing'] },
+  { label: 'MMA not falsely presented as an active batch', question: 'Is there an MMA class?', mustInclude: ["don't have"] },
+
+  // --- Things that are deliberately NO LONGER handled deterministically (guards against stale content resurfacing) ---
+  { label: 'JKD is no longer part of this academy\'s deterministic data', question: 'What is JKD?', mustInclude: [] }, // handled below as a null-result check
 ];
 
 async function main() {
@@ -63,8 +72,27 @@ async function main() {
     const text = result?.text ?? '';
     const lower = text.toLowerCase();
 
+    if (c.label.includes('no longer part of this academy')) {
+      // This one specifically asserts NO deterministic match anymore - JKD
+      // isn't this academy's discipline per the corrected knowledge base.
+      if (result === null) {
+        console.log(`PASS  ${c.label} (correctly falls through to AI/FAQ, not a stale deterministic answer)`);
+        pass += 1;
+      } else {
+        console.log(`FAIL  ${c.label}\n      Got a deterministic answer when there should be none: "${text}"`);
+        fail += 1;
+      }
+      continue;
+    }
+
     const missing = c.mustInclude.filter((s) => !lower.includes(s.toLowerCase()));
     const forbidden = (c.mustNotInclude ?? []).filter((s) => lower.includes(s.toLowerCase()));
+
+    if (c.label.startsWith('KOMBAT EXERCISE') && /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i.test(text)) {
+      console.log(`FAIL  ${c.label}\n      Invented a clock time that was never given: "${text}"`);
+      fail += 1;
+      continue;
+    }
 
     if (!result) {
       console.log(`FAIL  ${c.label}\n      Q: "${c.question}"\n      Got no deterministic answer at all`);

@@ -5,10 +5,14 @@ import { Prisma } from '@academy/db';
 
 interface CreateBatchInput {
   name: string;
+  branch?: string;
+  category?: 'KUNG_FU' | 'SENIOR' | 'DANCE';
+  audience?: string;
   daysOfWeek: number[];
   classStartTime: string; // "HH:mm"
+  classEndTime?: string; // "HH:mm"
   reminderOffsetMins?: number;
-  feeAmount: number;
+  feeAmount?: number;
   feeCycle?: 'MONTHLY' | 'QUARTERLY';
   minAge?: number;
   maxAge?: number;
@@ -17,8 +21,12 @@ interface CreateBatchInput {
 async function createBatch(input: CreateBatchInput) {
   return batchRepository.create({
     name: input.name,
+    branch: input.branch,
+    category: input.category,
+    audience: input.audience,
     daysOfWeek: input.daysOfWeek,
     classStartTime: input.classStartTime,
+    classEndTime: input.classEndTime,
     reminderOffsetMins: input.reminderOffsetMins ?? 60,
     feeAmount: input.feeAmount,
     feeCycle: input.feeCycle,

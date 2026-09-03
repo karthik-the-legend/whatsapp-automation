@@ -2,25 +2,23 @@
 //
 // WHY THIS FILE EXISTS
 // ---------------------
-// The "Deterministic Business Query Layer" the KFA rebuild explicitly
-// called for: schedules, fees, belt order, personal training days, and
-// junior age eligibility are facts with ONE correct answer, so they're
-// answered here from real structured data (Batch rows + the constants
-// below) BEFORE the AI ever runs - never generated, never at risk of the
-// LLM confusing "monthly fee" with "initial total" or inventing a day a
-// batch doesn't actually run on. Runs first in chatbot.service.ts's
-// decision chain, ahead of FAQ match and the AI fallback.
+// The "Deterministic Business Query Layer": schedules and branch/category
+// facts have exactly one correct answer, so they're answered here from
+// real structured data (Batch rows - see prisma/seed.ts) BEFORE the AI
+// ever runs. Fees are deliberately NOT computed here (or anywhere) - no
+// fee has been verified for this schedule, so every fee question gets the
+// same honest "I don't have that confirmed" answer rather than a guess.
 //
-// General/open-ended martial-arts knowledge (JKD history and philosophy
-// beyond these quick facts) is deliberately NOT handled here - that's a
-// genuinely open-ended explanation task, which is what the AI fallback
-// (grounded via systemPrompt.ts's JKD reference block) is for.
+// BRANCH RULE: a class at one branch is never assumed available at
+// another - Branch 1 and Hosa Road (Branch 2) are always queried and
+// reported separately.
 //
 // Returns null when nothing here answers the question - the caller falls
 // through to FAQ match, then the AI. This file never escalates and never
-// says "I don't know" on its own; it only answers what it's confident is a
-// real match for one of its own categories, or gets out of the way.
+// invents; it only answers what it's confident matches one of its own
+// categories, or gets out of the way.
 
+import { Batch } from '@academy/db';
 import { batchRepository } from '../repositories/batch.repository';
 
 export interface BusinessQueryResult {
@@ -28,24 +26,22 @@ export interface BusinessQueryResult {
   intent: string;
 }
 
-// ---------------------------------------------------------------------------
-// Verified KFA facts that aren't schedule data - see prisma/seed.ts for the
-// batch data this file also draws on. Change these constants (not the
-// prompt) if the academy's real fees/belts/personal-training info changes.
-// ---------------------------------------------------------------------------
+const BRANCH_1 = 'Branch 1';
+const BRANCH_2 = 'Hosa Road';
 
-const JUNIOR_FEES = { monthly: 1500, registration: 1500, uniform: 1500, total: 4500 };
-const ADULT_FEES = { monthly: 2000, registration: 1500, total: 3500 };
-const JUNIOR_MIN_AGE = 4;
-const BELT_ORDER = ['White', 'Yellow', 'Orange', 'Green', 'Purple', 'Blue', 'Brown', 'Red', 'Black'];
-const PERSONAL_TRAINING_DAYS = ['Tuesday', 'Thursday'];
-
-const JKD = {
-  meaning: 'The Way of the Intercepting Fist',
-  founder: 'Bruce Lee',
-  namedYear: '1967',
-  firstWrittenDate: 'July 9, 1967 (per the Bruce Lee Foundation)',
+const KOMBAT_EXERCISE = {
+  durationMinutes: 55,
+  virtualAvailable: true,
 };
+
+// Disciplines the academy is generally associated with (per Academy
+// Identity), but which do NOT currently have a verified active batch in
+// the schedule - asking about one of these by name must never be answered
+// with Kung Fu batch data as if it were the same thing (see the "only
+// state a class is available when explicitly in the verified schedule"
+// rule). Kung Fu / Martial Arts and (Western) Dance are the only
+// disciplines with real seeded batches.
+const UNCONFIRMED_DISCIPLINES = ['karate', 'boxing', 'kickboxing', 'brazilian jiu-jitsu', 'jiu-jitsu', 'jiujitsu', 'bjj', 'muay thai', 'mma', 'mixed martial arts'];
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const DAY_LOOKUP: Record<string, number> = {
@@ -69,18 +65,18 @@ function detectDays(text: string): number[] {
   return [...found];
 }
 
-/** "junior"/"kids"/"child(ren)" -> junior program; "adult"/"grown-up" -> adult program; otherwise unspecified. */
-function detectProgram(text: string): 'JUNIOR' | 'ADULT' | null {
-  if (has(text, 'junior', 'kid', 'kids', 'child', 'children', "my son", "my daughter")) return 'JUNIOR';
-  if (has(text, 'adult', 'adults', 'grown-up', 'grownup')) return 'ADULT';
+/** "hosa road" -> Branch 2; explicit "branch 1" -> Branch 1; otherwise unspecified (caller decides the default). */
+function detectBranch(text: string): string | null {
+  if (has(text, 'hosa road', 'hosa', 'branch 2')) return BRANCH_2;
+  if (has(text, 'branch 1')) return BRANCH_1;
   return null;
 }
 
-function isJuniorBatch(name: string): boolean {
-  return /^junior/i.test(name);
-}
-function isAdultBatch(name: string): boolean {
-  return /^adult/i.test(name);
+/** "child(ren)"/"kid(s)" -> Children; "adult(s)" -> Adults; otherwise unspecified. Used for Dance's two audiences. */
+function detectAudience(text: string): 'Children' | 'Adults' | null {
+  if (has(text, 'kid', 'kids', 'child', 'children', "my son", "my daughter")) return 'Children';
+  if (has(text, 'adult', 'adults', 'grown-up', 'grownup')) return 'Adults';
+  return null;
 }
 
 function formatTime12h(hhmm: string): string {
@@ -90,7 +86,7 @@ function formatTime12h(hhmm: string): string {
   return m === 0 ? `${hour12} ${period}` : `${hour12}:${String(m).padStart(2, '0')} ${period}`;
 }
 
-function formatBatchLine(batch: { name: string; daysOfWeek: number[]; classStartTime: string; classEndTime: string | null }): string {
+function formatBatchLine(batch: Pick<Batch, 'daysOfWeek' | 'classStartTime' | 'classEndTime'>): string {
   const days = [...batch.daysOfWeek].sort().map((d) => DAY_NAMES[d].slice(0, 3)).join(' & ');
   const start = formatTime12h(batch.classStartTime);
   const end = batch.classEndTime ? formatTime12h(batch.classEndTime) : null;
@@ -101,11 +97,9 @@ function formatBatchLine(batch: { name: string; daysOfWeek: number[]; classStart
 /**
  * Parses a spoken time like "5 PM", "10:30", "at 4" into candidate 24h
  * minutes-since-midnight values. When am/pm isn't stated and the hour is
- * ambiguous (1-11), returns BOTH readings rather than guessing one -
- * "at 4" could mean 4 AM or 4 PM, and only one of those corresponds to a
- * real batch. The caller checks real batch times against every candidate,
- * so this only ever "matches" a genuinely real, existing class time -
- * never a fabricated one.
+ * ambiguous (1-11), returns BOTH readings rather than guessing one - the
+ * caller checks real batch times against every candidate, so this only
+ * ever "matches" a genuinely real, existing class time.
  */
 function detectTimeMinutes(text: string): number[] {
   const match = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
@@ -118,161 +112,56 @@ function detectTimeMinutes(text: string): number[] {
   if (meridiem === 'pm') return [(rawHour % 12) * 60 + 720 + minute];
   if (meridiem === 'am') return [(rawHour % 12) * 60 + minute];
 
-  // No am/pm stated: both readings are candidates (skip the duplicate for 12).
   const amMinutes = (rawHour % 12) * 60 + minute;
   const pmMinutes = amMinutes + 720;
   return rawHour === 12 ? [amMinutes] : [amMinutes, pmMinutes];
 }
 
-async function getBatches() {
-  const all = await batchRepository.findAll();
-  return {
-    junior: all.filter((b) => isJuniorBatch(b.name)),
-    adult: all.filter((b) => isAdultBatch(b.name)),
-  };
+async function getAllBatches(): Promise<Batch[]> {
+  return batchRepository.findAll();
 }
 
 // ---------------------------------------------------------------------------
 // Rule handlers - checked in order, first match wins.
 // ---------------------------------------------------------------------------
 
-async function answerBeltQuestion(text: string): Promise<BusinessQueryResult | null> {
-  if (has(text, 'belt') && has(text, 'order', 'sequence', 'progression', 'levels', 'ranks', 'colors', 'colours', 'what')) {
-    return {
-      intent: 'BELT_SYSTEM',
-      text: `Our belt progression is:\n${BELT_ORDER.map((b, i) => `${i + 1}. ${b}`).join('\n')}`,
-    };
-  }
-  if (has(text, 'grading', 'belt exam', 'belt exams', 'belt test', 'belt tests') || (has(text, 'exam', 'exams', 'test', 'tests') && has(text, 'belt'))) {
-    return { intent: 'BELT_SYSTEM', text: 'Yes, KFA conducts grading/belt examinations for students.' };
-  }
-  return null;
-}
-
-async function answerPersonalTrainingQuestion(text: string): Promise<BusinessQueryResult | null> {
-  if (!has(text, 'personal training', 'private training', 'one-on-one', 'one on one', '1-on-1', '1 on 1')) return null;
-
-  if (detectTimeMinutes(text).length > 0 || has(text, 'time', 'timing', 'what time')) {
-    return {
-      intent: 'PERSONAL_TRAINING',
-      text: `Personal training is available on ${PERSONAL_TRAINING_DAYS.join(' and ')}, with the timing arranged based on your preferred schedule - what time would suit you on ${PERSONAL_TRAINING_DAYS[0]} or ${PERSONAL_TRAINING_DAYS[1]}?`,
-    };
-  }
+/** A named discipline the academy is generally associated with, but that has no verified active batch - must never be conflated with Kung Fu. */
+async function answerUnconfirmedDisciplineQuestion(text: string): Promise<BusinessQueryResult | null> {
+  const named = UNCONFIRMED_DISCIPLINES.find((d) => has(text, d));
+  if (!named) return null;
   return {
-    intent: 'PERSONAL_TRAINING',
-    text: `Yes, we offer personal training on ${PERSONAL_TRAINING_DAYS.join(' and ')}. The exact timing is arranged based on what works for you.`,
+    intent: 'DISCIPLINE_UNCONFIRMED',
+    text: `I don't have a currently active ${named.replace(/\b\w/g, (c) => c.toUpperCase())} batch confirmed in our schedule right now. We do have Kung Fu / Martial Arts and Western Dance batches running - want the timings for either of those, or I can have the team confirm ${named} availability for you?`,
   };
 }
 
-async function answerAgeEligibilityQuestion(text: string): Promise<BusinessQueryResult | null> {
-  const asksAge = has(text, 'age', 'old enough', 'how old', 'years old');
-  const mentionsChild = has(text, 'child', 'children', 'kid', 'kids', 'son', 'daughter', 'junior');
-  // "My daughter is 6" / "my son is 6" - a bare number right after "is",
-  // in a sentence that's already about a child, is almost certainly stating
-  // their age, not a time of day. Without this, that number gets picked up
-  // by the schedule handler's time parser instead - a real bug found via testing.
-  const statesChildAge = mentionsChild && /\bis\s+\d{1,2}\b/.test(text);
-  if (!asksAge && !statesChildAge && !(mentionsChild && has(text, 'join', 'enroll', 'start', 'eligible'))) return null;
-
+async function answerKombatExerciseQuestion(text: string): Promise<BusinessQueryResult | null> {
+  if (!has(text, 'kombat exercise')) return null;
   return {
-    intent: 'JUNIOR_PROGRAM',
-    text: `Our junior program is open to children age ${JUNIOR_MIN_AGE} and above. We have six junior batches - happy to share the timings so you can pick whichever works best.`,
+    intent: 'KOMBAT_EXERCISE',
+    text: `KOMBAT EXERCISE is a ${KOMBAT_EXERCISE.durationMinutes}-minute workout program - available in-person at the academy${KOMBAT_EXERCISE.virtualAvailable ? ', and also as a virtual workout' : ''}. I don't have the specific timings or fee details confirmed here right now - reply "talk to admin" and our team can share those with you.`,
   };
-}
-
-async function answerJkdQuickFact(text: string): Promise<BusinessQueryResult | null> {
-  // "What martial art do you teach kids?" doesn't say "JKD" at all, but
-  // it's asking the same thing - which discipline the junior program teaches.
-  if (has(text, 'what', 'which') && has(text, 'martial art', 'discipline', 'style') && has(text, 'kid', 'kids', 'child', 'children', 'junior')) {
-    return { intent: 'JEET_KUNE_DO', text: 'Jeet Kune Do (JKD).' };
-  }
-
-  const mentionsJkd = has(text, 'jkd') || has(text, 'jeet kune do');
-  if (!mentionsJkd) return null;
-
-  if (has(text, 'mean', 'meaning', 'translate', 'translation')) {
-    return { intent: 'JEET_KUNE_DO', text: `Jeet Kune Do translates to "${JKD.meaning}."` };
-  }
-  // "when"/"year" checked before "who" - both "who created it" and "when was
-  // it created" share the word "created", so the more specific question word
-  // (when vs who) has to win, not whichever keyword list happens to come first.
-  if (has(text, 'when', 'year', 'started', 'began')) {
-    return {
-      intent: 'JEET_KUNE_DO',
-      text: `Bruce Lee coined and started using the name Jeet Kune Do in ${JKD.namedYear}. The first written appearance of the name is documented as ${JKD.firstWrittenDate}.`,
-    };
-  }
-  if (has(text, 'who', 'creator', 'founder', 'created', 'founded', 'developed', 'invented')) {
-    return { intent: 'JEET_KUNE_DO', text: `Jeet Kune Do was developed by ${JKD.founder} as his personal expression of martial arts.` };
-  }
-  if (has(text, 'history')) {
-    return {
-      intent: 'JEET_KUNE_DO',
-      text: `Bruce Lee coined and started using the name Jeet Kune Do in ${JKD.namedYear}. The first written appearance of the name is documented as ${JKD.firstWrittenDate}.`,
-    };
-  }
-  if (has(text, 'what', 'martial art')) {
-    return {
-      intent: 'JEET_KUNE_DO',
-      text: 'Jeet Kune Do, or JKD, is the martial art and philosophy developed by Bruce Lee. It focuses on simplicity, directness, interception, adaptability and effective movement rather than being restricted to one rigid fighting style.',
-    };
-  }
-  return null;
 }
 
 async function answerFeeQuestion(text: string): Promise<BusinessQueryResult | null> {
-  const asksFee = has(text, 'fee', 'fees', 'cost', 'price', 'pay', 'payment', 'charge', 'charges', 'how much');
-  const asksBreakdown = has(text, 'why', 'breakdown', 'include', 'includes', 'included', 'made up');
-  const mentionsAmount = has(text, '4500', '4,500') || has(text, '3500', '3,500');
-  if (!asksFee && !(asksBreakdown && mentionsAmount)) return null;
-
-  const program = detectProgram(text) ?? (has(text, '4500', '4,500') ? 'JUNIOR' : has(text, '3500', '3,500') ? 'ADULT' : null);
-  const asksMonthlyOnly = has(text, 'monthly', 'per month', 'tuition') && !has(text, 'initial', 'total', 'registration', 'first', 'join', 'enroll');
-  const asksRegistrationOnly = has(text, 'registration', 'id fee') && !has(text, 'monthly', 'total', 'initial');
-  const asksUniformOnly = has(text, 'uniform') && program !== 'ADULT';
-  const asksInitialTotal = has(text, 'initial', 'total', 'upfront', 'first', 'join', 'enroll', 'start') || asksBreakdown;
-
-  if (program === 'JUNIOR' || (program === null && asksUniformOnly)) {
-    if (asksUniformOnly) return { intent: 'JUNIOR_FEES', text: `The JKD uniform fee is ₹${JUNIOR_FEES.uniform.toLocaleString('en-IN')}.` };
-    if (asksRegistrationOnly) return { intent: 'JUNIOR_FEES', text: `The registration & ID fee is ₹${JUNIOR_FEES.registration.toLocaleString('en-IN')}.` };
-    if (asksMonthlyOnly) return { intent: 'JUNIOR_FEES', text: `₹${JUNIOR_FEES.monthly.toLocaleString('en-IN')} per month.` };
-    if (asksInitialTotal) {
-      return {
-        intent: 'JUNIOR_FEES',
-        text: `₹${JUNIOR_FEES.total.toLocaleString('en-IN')} in total, including ₹${JUNIOR_FEES.monthly.toLocaleString('en-IN')} monthly fee, ₹${JUNIOR_FEES.registration.toLocaleString('en-IN')} registration & ID fee, and ₹${JUNIOR_FEES.uniform.toLocaleString('en-IN')} for the JKD uniform.`,
-      };
-    }
-    return { intent: 'JUNIOR_FEES', text: `Junior monthly tuition is ₹${JUNIOR_FEES.monthly.toLocaleString('en-IN')}. The initial payment (including registration & uniform) comes to ₹${JUNIOR_FEES.total.toLocaleString('en-IN')} - want the full breakdown?` };
-  }
-
-  if (program === 'ADULT') {
-    if (asksRegistrationOnly) return { intent: 'ADULT_FEES', text: `The adult registration fee is ₹${ADULT_FEES.registration.toLocaleString('en-IN')}.` };
-    if (asksMonthlyOnly) return { intent: 'ADULT_FEES', text: `₹${ADULT_FEES.monthly.toLocaleString('en-IN')} per month.` };
-    if (asksInitialTotal) {
-      return {
-        intent: 'ADULT_FEES',
-        text: `The total is ₹${ADULT_FEES.total.toLocaleString('en-IN')}, including ₹${ADULT_FEES.registration.toLocaleString('en-IN')} registration and ₹${ADULT_FEES.monthly.toLocaleString('en-IN')} monthly fee.`,
-      };
-    }
-    return { intent: 'ADULT_FEES', text: `Adult monthly tuition is ₹${ADULT_FEES.monthly.toLocaleString('en-IN')}. The initial payment (including registration) comes to ₹${ADULT_FEES.total.toLocaleString('en-IN')}.` };
-  }
-
-  // Program unspecified - ask, rather than guessing which fee schedule they mean.
+  if (!has(text, 'fee', 'fees', 'cost', 'price', 'pay', 'payment', 'charge', 'charges', 'how much')) return null;
   return {
-    intent: 'FEES_CLARIFY',
-    text: 'Are you asking about our junior (kids) program or the adult program? Fees differ between the two, so I want to give you the right numbers.',
+    intent: 'FEES_UNAVAILABLE',
+    text: "I don't have the current fee details available here. The academy team can confirm the latest fees for you - just reply \"talk to admin\".",
   };
 }
 
-/** "Batch 3" / "batch #3" style references - junior batches are numbered 1-6, adult 1-2 per KFA's own numbering. */
+/** "Batch 3" / "senior batch 1" - Branch 1 Kung Fu batches are numbered 1-6, Senior batches 1-2, per the academy's own numbering. */
 async function answerSpecificBatchQuestion(text: string): Promise<BusinessQueryResult | null> {
   const batchNumMatch = text.match(/\bbatch\s*#?\s*(\d)\b/i);
   if (!batchNumMatch) return null;
   const num = parseInt(batchNumMatch[1], 10);
 
-  const { junior, adult } = await getBatches();
-  const program = detectProgram(text);
-  const pool = program === 'ADULT' ? adult : junior; // bare "batch N" refers to KFA's junior numbering unless "adult" is specified
+  const all = await getAllBatches();
+  const isSenior = has(text, 'senior');
+  const pool = all
+    .filter((b) => b.branch === BRANCH_1 && b.category === (isSenior ? 'SENIOR' : 'KUNG_FU'))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const batch = pool[num - 1];
   if (!batch) return null;
 
@@ -282,71 +171,87 @@ async function answerSpecificBatchQuestion(text: string): Promise<BusinessQueryR
     if (!matchesAll) {
       return {
         intent: 'SCHEDULE',
-        text: `${batch.name.replace(/^Junior JKD /, 'Junior ').replace(/^Adult /, 'Adult ')} is currently listed for ${[...batch.daysOfWeek].sort().map((d) => DAY_NAMES[d]).join(' & ')} at ${formatTime12h(batch.classStartTime)}${batch.classEndTime ? `–${formatTime12h(batch.classEndTime)}` : ''} - not the day you asked about. Want me to check another batch for you?`,
+        text: `${batch.name} is currently listed for ${[...batch.daysOfWeek].sort().map((d) => DAY_NAMES[d]).join(' & ')} at ${formatTime12h(batch.classStartTime)}${batch.classEndTime ? `–${formatTime12h(batch.classEndTime)}` : ''} - not the day you asked about. Want me to check another batch for you?`,
       };
     }
   }
   return { intent: 'SCHEDULE', text: `${batch.name} runs ${formatBatchLine(batch).slice(2)}.` };
 }
 
+async function answerDanceQuestion(text: string): Promise<BusinessQueryResult | null> {
+  if (!has(text, 'dance', 'dancing')) return null;
+
+  const all = await getAllBatches();
+  const audience = detectAudience(text);
+  const matches = all.filter((b) => b.category === 'DANCE' && (!audience || b.audience === audience));
+  if (matches.length === 0) return null;
+
+  const lines = matches.map((b) => `• ${b.audience} — ${formatBatchLine(b).slice(2)}`);
+  return { intent: 'DANCE', text: `Our Western Dance batches:\n${lines.join('\n')}` };
+}
+
+/** Kung Fu / Martial Arts and Senior batches - branch-aware (BRANCH RULE: never conflate Branch 1 and Hosa Road). */
 async function answerScheduleQuestion(text: string): Promise<BusinessQueryResult | null> {
-  const { junior, adult } = await getBatches();
   const days = detectDays(text);
-  const program = detectProgram(text);
-  const asksJuniorTimings = has(text, 'junior') && has(text, 'timing', 'timings', 'schedule', 'batch', 'batches');
-  const asksAdultTimings = has(text, 'adult') && has(text, 'timing', 'timings', 'schedule', 'batch', 'batches');
+  const branch = detectBranch(text);
+  const isSenior = has(text, 'senior');
   const asksMorning = has(text, 'morning');
   const asksEvening = has(text, 'evening', 'night');
+  const asksAfternoon = has(text, 'afternoon');
   const asksWeekend = has(text, 'weekend', 'weekends');
   const timeCandidates = detectTimeMinutes(text);
-  const genericScheduleWord = has(text, 'class', 'classes', 'batch', 'batches', 'timing', 'timings', 'schedule');
+  const genericScheduleWord = has(text, 'class', 'classes', 'batch', 'batches', 'timing', 'timings', 'schedule', 'kung fu', 'martial arts');
 
   // A bare number alone (timeCandidates) is deliberately NOT enough to open
   // this gate by itself - "my daughter is 6" would otherwise get misread as
-  // "class at 6" (a real bug found via testing). It's only used below to
-  // REFINE an already-established schedule question ("is there a batch at
-  // 10:30" already has "batch" as a signal; "Sunday at 4" already has the day).
-  if (!days.length && !asksJuniorTimings && !asksAdultTimings && !asksMorning && !asksEvening && !asksWeekend && !genericScheduleWord) {
+  // "class at 6" (a real bug found via testing). It only REFINES an
+  // already-established schedule question.
+  if (!days.length && !isSenior && !asksMorning && !asksEvening && !asksAfternoon && !asksWeekend && !genericScheduleWord) {
     return null;
   }
 
-  const lines: string[] = [];
+  const all = await getAllBatches();
+  const category = isSenior ? 'SENIOR' : 'KUNG_FU';
 
-  const wantJunior = asksJuniorTimings || program === 'JUNIOR' || (!asksAdultTimings && program !== 'ADULT');
-  const wantAdult = asksAdultTimings || program === 'ADULT' || (!asksJuniorTimings && program !== 'JUNIOR');
-
-  const matchesFilters = (b: { daysOfWeek: number[]; classStartTime: string }) => {
+  const matchesFilters = (b: Batch) => {
+    if (b.category !== category) return false;
+    if (branch && b.branch !== branch) return false;
     if (days.length && !days.some((d) => b.daysOfWeek.includes(d))) return false;
-    if (asksMorning && parseInt(b.classStartTime.split(':')[0], 10) >= 12) return false;
-    if (asksEvening && parseInt(b.classStartTime.split(':')[0], 10) < 16) return false;
+    const startHour = parseInt(b.classStartTime.split(':')[0], 10);
+    if (asksMorning && startHour >= 12) return false;
+    if (asksAfternoon && (startHour < 12 || startHour >= 17)) return false;
+    if (asksEvening && startHour < 17) return false;
     if (asksWeekend && !b.daysOfWeek.some((d) => d === 0 || d === 6)) return false;
     if (timeCandidates.length > 0) {
       const [h, m] = b.classStartTime.split(':').map(Number);
-      const batchMinutes = h * 60 + m;
-      if (!timeCandidates.includes(batchMinutes)) return false;
+      if (!timeCandidates.includes(h * 60 + m)) return false;
     }
     return true;
   };
 
-  const juniorMatches = wantJunior ? junior.filter(matchesFilters) : [];
-  const adultMatches = wantAdult ? adult.filter(matchesFilters) : [];
+  const matches = all.filter(matchesFilters);
 
-  if (juniorMatches.length === 0 && adultMatches.length === 0) {
-    // A real filter was applied (day/time/morning/evening/weekend) and
-    // genuinely nothing matches - say so honestly rather than falling
-    // through silently or letting the AI guess.
-    if (days.length || timeCandidates.length > 0 || asksMorning || asksEvening || asksWeekend) {
-      return { intent: 'SCHEDULE', text: "I don't see a batch matching that in our current schedule - want me to share the full timings so you can pick what's closest?" };
+  if (matches.length === 0) {
+    if (days.length || timeCandidates.length > 0 || asksMorning || asksEvening || asksAfternoon || asksWeekend) {
+      const branchNote = branch ? ` at ${branch}` : '';
+      return { intent: 'SCHEDULE', text: `I don't see a ${isSenior ? 'Senior' : 'Kung Fu'} batch matching that${branchNote} in our current schedule - want me to share the full timings so you can pick what's closest?` };
     }
     return null;
   }
 
-  if (juniorMatches.length > 0) {
-    lines.push('Junior batches:', ...juniorMatches.map(formatBatchLine));
+  // Group by branch so a multi-branch answer is never presented as one
+  // undifferentiated list (BRANCH RULE).
+  const byBranch = new Map<string, Batch[]>();
+  for (const b of matches) {
+    if (!byBranch.has(b.branch)) byBranch.set(b.branch, []);
+    byBranch.get(b.branch)!.push(b);
   }
-  if (adultMatches.length > 0) {
+
+  const lines: string[] = [];
+  for (const [branchName, batchesInBranch] of byBranch) {
     if (lines.length) lines.push('');
-    lines.push('Adult batches:', ...adultMatches.map(formatBatchLine));
+    lines.push(byBranch.size > 1 ? `${branchName}:` : `${isSenior ? 'Senior' : 'Kung Fu'} batches:`);
+    lines.push(...batchesInBranch.map(formatBatchLine));
   }
 
   return { intent: 'SCHEDULE', text: lines.join('\n') };
@@ -357,12 +262,11 @@ async function answerScheduleQuestion(text: string): Promise<BusinessQueryResult
 // ---------------------------------------------------------------------------
 
 const HANDLERS = [
+  answerKombatExerciseQuestion,
+  answerUnconfirmedDisciplineQuestion,
   answerSpecificBatchQuestion,
-  answerBeltQuestion,
-  answerPersonalTrainingQuestion,
-  answerJkdQuickFact,
+  answerDanceQuestion,
   answerFeeQuestion,
-  answerAgeEligibilityQuestion,
   answerScheduleQuestion,
 ];
 
