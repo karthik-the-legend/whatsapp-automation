@@ -30,6 +30,7 @@ import { businessQueryService } from './businessQuery.service';
 import { getAiProvider } from './ai/aiProviderFactory';
 import { AiCompletionResult } from './ai/aiProvider.interface';
 import { buildChatbotSystemPrompt } from '../prompts/systemPrompt';
+import { knowledgeBaseService } from './knowledgeBase.service';
 import { detectGreeting } from '../utils/greetingDetector';
 import { composeGreeting, composeGreetingPrefix } from '../prompts/greetingResponses';
 import { handoverService } from './handover.service';
@@ -40,6 +41,9 @@ export interface CustomerContext {
   isFirstInteraction: boolean;
   customerName: string | null;
   interactionCount: number;
+  preferredBranch?: string | null;
+  studentAge?: number | null;
+  interestedProgram?: string | null;
 }
 
 const log = logger.child({ module: 'chatbot-service' });
@@ -87,12 +91,21 @@ async function matchFaq(messageText: string): Promise<Faq | null> {
 
 async function askAi(conversationId: string, messageText: string, customerContext?: CustomerContext): Promise<AiCompletionResult> {
   const [faqs, batches] = await Promise.all([faqRepository.findAllActive(), batchRepository.findAll()]);
+  const knowledgeDocs = knowledgeBaseService.retrieve(messageText);
   const systemPrompt = buildChatbotSystemPrompt(
     faqs,
     batches,
     customerContext
-      ? { name: customerContext.customerName, isFirstInteraction: customerContext.isFirstInteraction, interactionCount: customerContext.interactionCount }
+      ? {
+          name: customerContext.customerName,
+          isFirstInteraction: customerContext.isFirstInteraction,
+          interactionCount: customerContext.interactionCount,
+          preferredBranch: customerContext.preferredBranch,
+          studentAge: customerContext.studentAge,
+          interestedProgram: customerContext.interestedProgram,
+        }
       : undefined,
+    knowledgeDocs,
   );
   const history = await conversationRepository.history(conversationId, 10);
 

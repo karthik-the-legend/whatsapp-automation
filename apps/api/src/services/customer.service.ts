@@ -11,6 +11,7 @@
 import { CustomerProfile } from '@academy/db';
 import { customerRepository } from '../repositories/customer.repository';
 import { extractName } from '../utils/extractName';
+import { extractStudentAge, extractPreferredBranch, extractInterestedProgram } from '../utils/extractCustomerFacts';
 
 export interface RecordContactResult {
   profile: CustomerProfile;
@@ -30,6 +31,19 @@ async function recordInboundMessage(phone: string, messageText: string): Promise
   const name = extractName(messageText);
   if (name && name !== profile.name) {
     profile = await customerRepository.updateName(profile.id, name);
+  }
+
+  // Each field only overwrites once a NEW explicit statement is found -
+  // never cleared just because this particular message didn't mention it.
+  const memoryUpdate: Partial<Pick<CustomerProfile, 'studentAge' | 'preferredBranch' | 'interestedProgram'>> = {};
+  const age = extractStudentAge(messageText);
+  if (age != null && age !== profile.studentAge) memoryUpdate.studentAge = age;
+  const branch = extractPreferredBranch(messageText);
+  if (branch && branch !== profile.preferredBranch) memoryUpdate.preferredBranch = branch;
+  const program = extractInterestedProgram(messageText);
+  if (program && program !== profile.interestedProgram) memoryUpdate.interestedProgram = program;
+  if (Object.keys(memoryUpdate).length > 0) {
+    profile = await customerRepository.updateMemory(profile.id, memoryUpdate);
   }
 
   profile = await customerRepository.recordContact(profile.id);

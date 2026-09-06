@@ -22,4 +22,12 @@ async function updateName(id: string, name: string): Promise<CustomerProfile> {
   return prisma.customerProfile.update({ where: { id }, data: { name } });
 }
 
-export const customerRepository = { findByPhone, create, recordContact, updateName };
+/** Any subset of the conservative-memory fields extracted from a message - only ever called with fields that were actually just detected, never to clear an existing value. */
+async function updateMemory(
+  id: string,
+  fields: Partial<Pick<CustomerProfile, 'studentAge' | 'preferredBranch' | 'interestedProgram'>>,
+): Promise<CustomerProfile> {
+  return prisma.customerProfile.update({ where: { id }, data: fields });
+}
+
+export const customerRepository = { findByPhone, create, recordContact, updateName, updateMemory };

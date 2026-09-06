@@ -88,6 +88,9 @@ async function handleInboundMessage(message: InboundTextMessage): Promise<void> 
     isFirstInteraction,
     customerName: profile.name,
     interactionCount: profile.interactionCount,
+    preferredBranch: profile.preferredBranch,
+    studentAge: profile.studentAge,
+    interestedProgram: profile.interestedProgram,
   });
 }
 

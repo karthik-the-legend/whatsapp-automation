@@ -59,14 +59,14 @@ enum StudentStatus {
 model Batch {
   id                  String        @id @default(cuid())
   name                String        // e.g. "Kids Kickboxing - Evening"
-  branch              String        @default("Branch 1") // "Branch 1" or "Hosa Road" (Branch 2) - see businessQuery.service.ts's BRANCH RULE: a class at one branch is never assumed available at another
+  branch              String        @default("Main Branch") // "Main Branch" (Begur-Koppa Road) or "ADON Institute" (Hosa Road) - see businessQuery.service.ts's BRANCH RULE: a class at one branch is never assumed available at another
   category            BatchCategory @default(KUNG_FU)
   audience            String?       // free text, only set when the verified source data specifies one, e.g. "Children", "Adults", "Men & Ladies" - never invented
   daysOfWeek          Int[]         // 0=Sunday..6=Saturday; e.g. weekend batch = [0,6]
   classStartTime      String        // "17:00" - 24hr local time
   classEndTime        String?       // "18:00" - 24hr local time; nullable so existing rows aren't broken by this addition
   reminderOffsetMins  Int           @default(60) // send class reminder N minutes before start
-  feeAmount           Int?          // smallest currency unit (paise/cents) - nullable: no verified fee has been provided for the real KFA schedule, and this must never be guessed (see FEES RULE)
+  feeAmount           Int?          // monthly fee, smallest currency unit (paise) - nullable, only ever set from a verified figure (see FEE_PROFILES in businessQuery.service.ts for the full breakdown; never guessed)
   feeCycle            FeeCycle      @default(MONTHLY)
   minAge              Int?
   maxAge              Int?
@@ -215,6 +215,9 @@ model CustomerProfile {
   id                String    @id @default(cuid())
   phone             String    @unique // WhatsApp number, E.164 - the persistent identity
   name              String?   // only ever set from an explicit self-identification the customer typed ("my name is X") - never guessed
+  studentAge        Int?      // only set from an explicit statement ("my son is 8") - never guessed
+  preferredBranch   String?   // "Main Branch" or "ADON Institute" - only set once the customer has clearly indicated one
+  interestedProgram String?   // free text, only set from an explicit statement - never guessed
   firstContactAt    DateTime  @default(now())
   lastContactAt     DateTime  @default(now())
   interactionCount  Int       @default(0)
