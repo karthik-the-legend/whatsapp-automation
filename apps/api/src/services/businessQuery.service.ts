@@ -332,7 +332,11 @@ async function answerScheduleQuestion(text: string): Promise<BusinessQueryResult
   const asksAfternoon = has(text, 'afternoon');
   const asksWeekend = has(text, 'weekend', 'weekends');
   const timeCandidates = detectTimeMinutes(text);
-  const genericScheduleWord = has(text, 'class', 'classes', 'batch', 'batches', 'timing', 'timings', 'schedule', 'kung fu', 'martial arts');
+  // Deliberately NOT "martial arts" - that phrase shows up in generic
+  // conceptual questions ("is martial arts good for a shy kid?") that have
+  // nothing to do with schedules, and was wrongly dumping the full batch
+  // list for those (a real bug found via production testing).
+  const genericScheduleWord = has(text, 'class', 'classes', 'batch', 'batches', 'timing', 'timings', 'schedule', 'kung fu');
 
   // A bare number alone (timeCandidates) is deliberately NOT enough to open
   // this gate by itself - "my daughter is 6" would otherwise get misread as

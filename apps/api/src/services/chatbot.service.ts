@@ -26,7 +26,7 @@ import { Faq } from '@academy/db';
 import { faqRepository } from '../repositories/faq.repository';
 import { batchRepository } from '../repositories/batch.repository';
 import { conversationRepository } from '../repositories/conversation.repository';
-import { businessQueryService } from './businessQuery.service';
+import { businessQueryService, BusinessQueryResult } from './businessQuery.service';
 import { getAiProvider } from './ai/aiProviderFactory';
 import { AiCompletionResult } from './ai/aiProvider.interface';
 import { buildChatbotSystemPrompt } from '../prompts/systemPrompt';
@@ -107,7 +107,15 @@ async function askAi(conversationId: string, messageText: string, customerContex
       : undefined,
     knowledgeDocs,
   );
-  const history = await conversationRepository.history(conversationId, 10);
+  // +1 then drop the newest entry: handleMessage() always persists the
+  // current inbound message BEFORE calling askAi(), so history[0] (DESC
+  // order) is always this exact turn's own message - already sent
+  // separately below as `userMessage`. Leaving it in would append a
+  // second consecutive "user" turn, which Gemini (and Anthropic) reject
+  // with a strict-alternation error - this was silently sending every
+  // AI-fallback reply with prior conversation history straight to the
+  // AI_ERROR fallback message instead of a real answer.
+  const history = (await conversationRepository.history(conversationId, 11)).slice(1);
 
   const conversationHistory = history
     .reverse()
@@ -118,6 +126,37 @@ async function askAi(conversationId: string, messageText: string, customerContex
 
   const provider = getAiProvider();
   return provider.complete({ systemPrompt, userMessage: messageText, conversationHistory });
+}
+
+// Deterministic-layer intents that represent an open clarifying question
+// (see businessQuery.service.ts) - a bare follow-up reply to one of these
+// ("Main branch") carries no fee/schedule keywords of its own, so on its
+// own it can't match any handler. Combining it with the ORIGINAL question
+// that prompted the clarification lets the same deterministic handlers
+// resolve it correctly instead of falling through to the AI (which has no
+// reliable way to do exact fee arithmetic).
+const CLARIFYING_INTENTS = new Set(['FEE_CLARIFY_BRANCH']);
+
+/** Retries businessQueryService.answer() with the original question prepended when the current message is a bare answer to a clarifying question the bot itself just asked. */
+async function resolveBusinessAnswer(conversationId: string, effectiveText: string): Promise<BusinessQueryResult | null> {
+  const direct = await businessQueryService.answer(effectiveText);
+  if (direct) return direct;
+
+  // recent[0] is the current inbound message (already persisted by the
+  // time this runs), recent[1] the bot's last reply, recent[2] the
+  // customer's message that prompted it.
+  const recent = await conversationRepository.history(conversationId, 3);
+  const lastOutbound = recent[1];
+  const priorInbound = recent[2];
+  if (
+    lastOutbound?.direction === 'OUTBOUND' &&
+    lastOutbound.intent &&
+    CLARIFYING_INTENTS.has(lastOutbound.intent) &&
+    priorInbound?.direction === 'INBOUND'
+  ) {
+    return businessQueryService.answer(`${priorInbound.body} ${effectiveText}`);
+  }
+  return null;
 }
 
 /** Sends `text` (with `prefix` prepended if given), persists the exact composed text, and logs. */
@@ -164,7 +203,7 @@ async function handleMessage(
   const greetingPrefix = isGreeting ? composeGreetingPrefix(greetingCtx) : null;
   const effectiveText = isGreeting ? remainder : messageText;
 
-  const businessAnswer = await businessQueryService.answer(effectiveText);
+  const businessAnswer = await resolveBusinessAnswer(conversationId, effectiveText);
   if (businessAnswer) {
     await reply(conversationId, phone, businessAnswer.text, greetingPrefix, { intent: businessAnswer.intent, confidence: 1 });
     log.info('Resolved via deterministic business data', { conversationId, intent: businessAnswer.intent, greeted: isGreeting });
